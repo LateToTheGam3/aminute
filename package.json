@@ -1,0 +1,14 @@
+{
+  "name": "aminute",
+  "version": "1.0.0",
+  "private": true,
+  "description": "aminute — business, finance and geopolitics in 60 words, with the context, the why, and the jargon explained.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file-if-exists=.env server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "aminute — the news, in a minute",
+  "short_name": "aminute",
+  "description": "Business, finance and geopolitics in 60 words — with the context, the why, and the jargon explained.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f0ebdd",
+  "theme_color": "#f9f5e9",
+  "categories": ["news", "finance", "education"],
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

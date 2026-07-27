@@ -1,0 +1,8 @@
+# Secrets — never commit. The Gemini key lives here.
+.env
+.env.*
+!.env.example
+
+node_modules/
+.DS_Store
+*.log
