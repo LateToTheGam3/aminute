@@ -7,7 +7,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const PORT = process.env.PORT || 3210;
+// Render (and any host) sets PORT itself. The local default avoids 3210,
+// which a long-running Next.js dev server already occupies on this machine.
+const PORT = process.env.PORT || 4310;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // UK-first mix — the audience is UK grad-scheme applicants, so British
@@ -40,6 +42,81 @@ const FEEDS = {
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const cache = new Map(); // category -> { at, items }
+
+// Dedupe by title, then round-robin across sources rather than sorting purely
+// by date. A prolific publisher (CNBC posts many times an hour; City AM a few
+// times a day) would otherwise crowd everyone else out and the feed would read
+// as all-American. Within each source: newest first.
+function interleaveBySource(items, limit) {
+  const seen = new Set();
+  const deduped = items.filter((i) => (seen.has(i.title) ? false : seen.add(i.title)));
+
+  const bySource = new Map();
+  for (const item of deduped) {
+    if (!bySource.has(item.source)) bySource.set(item.source, []);
+    bySource.get(item.source).push(item);
+  }
+  const queues = [...bySource.values()];
+  for (const q of queues) {
+    q.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0));
+  }
+  // Freshest source leads the rotation, so the top card is still current news.
+  queues.sort((a, b) => new Date(b[0].publishedAt || 0) - new Date(a[0].publishedAt || 0));
+
+  const mixed = [];
+  while (mixed.length < limit && queues.some((q) => q.length)) {
+    for (const q of queues) {
+      if (!q.length) continue;
+      mixed.push(q.shift());
+      if (mixed.length >= limit) break;
+    }
+  }
+  return mixed;
+}
+
+// Prefer the AI summary when it is substantial. Picking "whichever is longer"
+// was wrong: some feeds (the Guardian) put the entire article in the
+// description, so a raw run-on always beat a clean 3-sentence summary.
+function chooseSummary(aiSummary, feedSummary) {
+  const words = (s) => (s || '').split(/\s+/).filter(Boolean).length;
+  return words(aiSummary) >= 25 ? aiSummary : feedSummary;
+}
+
+// Hallucination guard. The model writes original prose about named, real
+// people and companies, so an invented quote or statistic is a genuine
+// defamation risk — not a cosmetic bug. Reject any summary that introduces
+// direct speech or a figure that does not appear in the source material.
+function verifyAgainstSource(summary, sourceText) {
+  // Publishers mix curly and straight quotes for the same words, so normalise
+  // before comparing or the guard rejects perfectly faithful text.
+  const norm = (s) => (s || '')
+    .toLowerCase()
+    .replace(/[‘’“”]/g, "'")
+    .replace(/\s+/g, ' ');
+
+  const src = norm(sourceText);
+  const sum = norm(summary);
+
+  // Direct speech the source never contained.
+  for (const q of sum.match(/'([^']{12,})'/g) || []) {
+    const inner = q.slice(1, -1);
+    if (!src.includes(inner.slice(0, 40))) {
+      return { ok: false, reason: 'invented quote' };
+    }
+  }
+
+  // Numbers carry the most factual weight and are the easiest to fabricate.
+  const srcDigits = src.replace(/[,\s]/g, '');
+  for (const raw of sum.match(/\d[\d,]*(?:\.\d+)?/g) || []) {
+    const bare = raw.replace(/,/g, '').replace(/\.$/, '');
+    if (/^(19|20)\d{2}$/.test(bare)) continue; // a year is legitimate context
+    if (bare.length < 2) continue;             // single digits are noise
+    if (!srcDigits.includes(bare)) {
+      return { ok: false, reason: `unsupported figure: ${raw}` };
+    }
+  }
+  return { ok: true };
+}
 
 function decodeEntities(s) {
   return s
@@ -187,21 +264,31 @@ Return ONLY a JSON object with exactly these fields:
   "why_it_matters": "EXACTLY 2 sentences, 30-45 words total. First sentence: the commercial or market consequence. Second sentence: why a candidate should care — what it signals about the sector, or how they could use it in an interview answer. Never one line.",
   "jargon": [{"term": "a technical term that appears in your summary", "meaning": "max 15 words, simple English"}]
 }
-Include 0-3 jargon items, only genuinely technical terms a beginner wouldn't know. Terms must appear verbatim in your summary.`;
+Include 0-3 jargon items, only genuinely technical terms a beginner wouldn't know. Terms must appear verbatim in your summary.
+
+ACCURACY RULES — these override everything above. This text is published about real, named people and companies:
+- Use ONLY facts stated in the source text. Never add figures, dates, percentages, names or quotes that are not there.
+- Never invent direct speech. Do not put words in anyone's mouth.
+- Never speculate about a named individual's motives, guilt, health or private life. Report only what the source reports.
+- If the source is thin, write less and stay general. Do NOT fill the gap by inventing specifics.
+- Attribute contested claims ("the company said", "prosecutors allege") rather than stating them as fact.`;
   const parsed = await geminiJSON(prompt, 14000);
   if (!parsed || !parsed.summary) return null;
 
-  // Prefer the AI summary whenever it is substantial. Picking "whichever is
-  // longer" was wrong: some feeds (the Guardian) put the entire article in the
-  // description, so a raw run-on always beat a clean 3-sentence summary.
-  // Only fall back to the feed text if the model returned something too thin.
   const aiSummary = String(parsed.summary).trim();
   const feedSummary = (item.summary || '').trim();
-  const words = (s) => s.split(/\s+/).filter(Boolean).length;
+
+  // Never publish an unverifiable claim about a real person or company.
+  const source = `${item.origTitle || item.title} ${feedSummary}`;
+  const check = verifyAgainstSource(aiSummary, source);
+  if (!check.ok) {
+    console.warn(`[hallucination guard] ${check.reason} — ${item.title.slice(0, 60)}`);
+    return null; // card keeps the publisher's own words
+  }
 
   const out = {
     headline: parsed.headline ? String(parsed.headline) : null,
-    summary: words(aiSummary) >= 25 ? aiSummary : feedSummary,
+    summary: chooseSummary(aiSummary, feedSummary),
     whyItMatters: parsed.why_it_matters ? String(parsed.why_it_matters) : null,
     jargon: Array.isArray(parsed.jargon)
       ? parsed.jargon
@@ -363,30 +450,7 @@ async function getNews(category) {
   // purely by date. A prolific publisher (CNBC posts many times an hour;
   // City AM a few times a day) would otherwise crowd everyone else out and
   // the feed would read as all-American. Within each source: newest first.
-  const seen = new Set();
-  const deduped = items.filter((i) => (seen.has(i.title) ? false : seen.add(i.title)));
-
-  const bySource = new Map();
-  for (const item of deduped) {
-    if (!bySource.has(item.source)) bySource.set(item.source, []);
-    bySource.get(item.source).push(item);
-  }
-  const queues = [...bySource.values()];
-  for (const q of queues) {
-    q.sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0));
-  }
-  // Freshest source leads the rotation, so the top card is still current news.
-  queues.sort((a, b) => new Date(b[0].publishedAt || 0) - new Date(a[0].publishedAt || 0));
-
-  const mixed = [];
-  while (mixed.length < 40 && queues.some((q) => q.length)) {
-    for (const q of queues) {
-      if (!q.length) continue;
-      mixed.push(q.shift());
-      if (mixed.length >= 40) break;
-    }
-  }
-  items = mixed;
+  items = interleaveBySource(items, 40);
 
   for (const item of items) {
     item.whyItMatters = item.whyItMatters ?? null;
@@ -539,6 +603,28 @@ const server = http.createServer(async (req, res) => {
 process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err));
 process.on('uncaughtException', (err) => console.error('[uncaughtException]', err));
 
-server.listen(PORT, () => {
-  console.log(`inshorts-clone running at http://localhost:${PORT}`);
+// A failure to bind is fatal and must not be swallowed by the handlers above,
+// which exist for runtime errors — not for a server that never started.
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\nPort ${PORT} is already in use by another program.` +
+      `\nRun on a different port:  PORT=4311 npm run dev\n`);
+    process.exit(1);
+  }
+  console.error('[server]', err);
+  process.exit(1);
 });
+
+// Only listen when run directly, so the test suite can import the pure
+// functions above without starting a network service.
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`aminute running at http://localhost:${PORT}`);
+  });
+}
+
+module.exports = {
+  decodeEntities, tag, attr, sourceFromLink, parseFeed,
+  interleaveBySource, chooseSummary, verifyAgainstSource,
+  rateLimited, clientIp, FEEDS, SECURITY_HEADERS,
+};
