@@ -43,6 +43,12 @@ const FEEDS = {
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const cache = new Map(); // category -> { at, items }
 
+// The feed is paginated, so hold everything the sources give us rather than
+// capping at one screenful. Pages are enriched on demand as the reader
+// arrives at them.
+const POOL_MAX = 300;
+const PAGE_SIZE = 15;
+
 // Dedupe by title, then round-robin across sources rather than sorting purely
 // by date. A prolific publisher (CNBC posts many times an hour; City AM a few
 // times a day) would otherwise crowd everyone else out and the feed would read
@@ -214,7 +220,7 @@ async function fetchOgImage(url) {
   return image;
 }
 
-async function enrichImages(items, limit = 25) {
+async function enrichImages(items, limit = 30) {
   const missing = items.filter((i) => !i.image).slice(0, limit);
   const BATCH = 8;
   for (let n = 0; n < missing.length; n += BATCH) {
@@ -450,14 +456,18 @@ async function getNews(category) {
   // purely by date. A prolific publisher (CNBC posts many times an hour;
   // City AM a few times a day) would otherwise crowd everyone else out and
   // the feed would read as all-American. Within each source: newest first.
-  items = interleaveBySource(items, 40);
+  // Keep the whole pool, not a fixed 40 — the feed is paginated so the reader
+  // can keep going. Round-robin mixing still applies across the full pool.
+  items = interleaveBySource(items, POOL_MAX);
 
   for (const item of items) {
     item.whyItMatters = item.whyItMatters ?? null;
     item.jargon = item.jargon ?? [];
   }
-  await enrichImages(items);
-  await enrichAI(items);
+  // Images are cheap and make the first paint look right; AI enrichment is
+  // done per page in the request handler so the first load isn't held up
+  // waiting for stories the reader may never reach.
+  await enrichImages(items, 30);
 
   if (items.length) cache.set(category, { at: Date.now(), items });
   return items;
@@ -535,11 +545,23 @@ const server = http.createServer(async (req, res) => {
         JSON.stringify({ error: 'Unknown category' }));
     }
     try {
-      const items = await getNews(category);
+      const all = await getNews(category);
+      const n = (v, d) => { const x = parseInt(v, 10); return Number.isFinite(x) ? x : d; };
+      const offset = Math.max(0, n(url.searchParams.get('offset'), 0));
+      const limit = Math.min(30, Math.max(1, n(url.searchParams.get('limit'), PAGE_SIZE)));
+      const items = all.slice(offset, offset + limit);
+
+      // Enrich just this page: the first few before responding so the cards
+      // the reader lands on are complete, the rest filled in behind them.
+      await enrichAI(items, Math.min(5, items.length));
+
       return send(res, 200, {
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store',
-      }, JSON.stringify({ category, count: items.length, items }));
+      }, JSON.stringify({
+        category, offset, count: items.length, total: all.length,
+        hasMore: offset + items.length < all.length, items,
+      }));
     } catch (err) {
       console.error('[news]', err);
       return send(res, 502, { 'content-type': 'application/json' },

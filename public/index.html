@@ -151,18 +151,41 @@
   .card .body {
     flex: 1;
     min-height: 0;
-    padding: 16px 20px 8px;
+    padding: 16px 20px 0;
     display: flex;
     flex-direction: column;
-    /* Clipped by default so swipe gestures pass straight through to the feed.
-       Only the expanded card scrolls internally (rule below), and scroll
-       chaining is left on so reaching its end still advances to the next card. */
     overflow: hidden;
     max-width: 640px;
     width: 100%;
     margin: 0 auto;
   }
-  .card .body::-webkit-scrollbar { display: none; }
+  /* Article text scrolls in here; the action row below is pinned. Previously
+     everything shared one clipped box, so a long story pushed the buttons —
+     including "Break it down" — off the bottom of the card entirely. Scroll
+     chaining stays on so reaching the end still swipes to the next card. */
+  .card .scroller {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+  .card .scroller::-webkit-scrollbar { display: none; }
+  .card .foot {
+    flex-shrink: 0;
+    padding-bottom: 8px;
+    background: var(--card);
+    position: relative;
+  }
+  /* Soft fade above the action row so text clipped by the scroll region reads
+     as "there's more below", not as a rendering fault. */
+  .card .foot::before {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; top: -22px;
+    height: 22px;
+    background: linear-gradient(to bottom, transparent, var(--card));
+    pointer-events: none;
+  }
   .chipline {
     font-size: 10.5px;
     font-weight: 700;
@@ -186,11 +209,6 @@
     line-height: 1.58;
     font-weight: 400;
     color: var(--text-2);
-    display: -webkit-box;
-    -webkit-line-clamp: 7;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    flex-shrink: 0;
   }
   .jargon {
     border-bottom: 2px dotted var(--accent);
@@ -229,13 +247,10 @@
   .explain b.tag { color: var(--gold); }
   /* With the breakdown open, the 60-word summary has already been read —
      trim it to a few lines so the explanation gets the room. */
-  .card.expanded .summary { -webkit-line-clamp: 3; }
-  .card.expanded .body { overflow-y: auto; }
   .explain ul { margin: 2px 0 0; padding-left: 18px; }
   .explain li { margin-bottom: 6px; }
   .explain li:last-child { margin-bottom: 0; }
   .card .meta {
-    margin-top: auto;
     padding: 10px 0 8px;
     font-size: 12.5px;
     color: var(--text-3);
@@ -702,19 +717,65 @@
   });
 
   // ---------- Feed ----------
+  // Infinite scroll: pages are appended as the reader nears the end, so the
+  // feed keeps going instead of stopping dead at one screenful.
+  let loadedCount = 0, hasMore = true, loadingMore = false;
+
+  async function loadMore() {
+    if (loadingMore || !hasMore) return;
+    loadingMore = true;
+    try {
+      const res = await fetch(`/api/news?category=${currentCat}&offset=${loadedCount}`);
+      const data = await res.json();
+      if (data.items && data.items.length) {
+        for (const item of data.items) feed.appendChild(buildCard(item));
+        loadedCount += data.items.length;
+        updateProgress();
+      }
+      hasMore = !!data.hasMore;
+    } catch {
+      // Offline or server down — keep what we have and try again later.
+    } finally {
+      loadingMore = false;
+      watchTail();
+    }
+  }
+
+  // Trigger the next page when the reader nears the end. An IntersectionObserver
+  // is used rather than the scroll event: under mandatory scroll-snap the scroll
+  // handler fires unreliably, and a feed that stops dead is worse than an extra
+  // fetch. The observer re-arms itself after every appended page.
+  let tailObserver = null;
+  function watchTail() {
+    if (tailObserver) tailObserver.disconnect();
+    if (!hasMore) return;
+    const cards = feed.querySelectorAll('.card');
+    if (!cards.length) return;
+    const sentinel = cards[Math.max(0, cards.length - 5)];
+    tailObserver = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) loadMore();
+    }, { root: feed, rootMargin: '100% 0px' });
+    tailObserver.observe(sentinel);
+  }
+
   async function load(cat) {
     currentCat = cat;
     currentLabel = CATEGORIES.find(c => c[0] === cat)[2];
     catLabel.textContent = currentLabel;
     buildNav();
     feed.innerHTML = '<div class="state"><div class="spinner"></div><div>Fetching your minute…</div></div>';
+    loadedCount = 0;
+    hasMore = true;
+    loadingMore = false;
     try {
-      const res = await fetch(`/api/news?category=${cat}`);
+      const res = await fetch(`/api/news?category=${cat}&offset=0`);
       const data = await res.json();
       if (!data.items || !data.items.length) throw new Error('empty');
       // Served from cache because the server was unreachable — say so.
       stale = res.headers.get('x-from-cache') === '1';
       setOnlineState();
+      loadedCount = data.items.length;
+      hasMore = !!data.hasMore;
       render(data.items);
     } catch (e) {
       feed.innerHTML = `<div class="state">
@@ -734,6 +795,7 @@
     feed.scrollTop = 0;
     updateProgress();
     scheduleQuietRefresh();
+    watchTail();
   }
 
   // Enrichment of the whole feed takes a couple of minutes on the free tier,
@@ -782,16 +844,20 @@
       card.innerHTML = `
         ${img}
         <div class="body">
-          <div class="chipline">${esc((item.category || 'news'))} <em>· ${esc(item.source)}</em></div>
-          <h2></h2>
-          <div class="summary"></div>
-          ${whyHtml}
-          <div class="explain" style="display:none"></div>
-          <div class="meta"><span></span></div>
-          <div class="actions">
-            <button class="chip share">Share ↗</button>
-            <button class="chip open">Open article</button>
-            <button class="chip gold breakdown">🧩 Break it down</button>
+          <div class="scroller">
+            <div class="chipline">${esc((item.category || 'news'))} <em>· ${esc(item.source)}</em></div>
+            <h2></h2>
+            <div class="summary"></div>
+            ${whyHtml}
+            <div class="explain" style="display:none"></div>
+          </div>
+          <div class="foot">
+            <div class="meta"><span></span></div>
+            <div class="actions">
+              <button class="chip share">Share ↗</button>
+              <button class="chip open">Open article</button>
+              <button class="chip gold breakdown">🧩 Break it down</button>
+            </div>
           </div>
         </div>
         <a class="readmore" href="${item.url}" target="_blank" rel="noopener">Tap to read the full story at ${item.source}</a>`;
@@ -845,9 +911,17 @@
     const total = feed.querySelectorAll('.card').length;
     if (!total) { catLabel.textContent = currentLabel; return; }
     const idx = Math.min(total, Math.round(feed.scrollTop / (feed.clientHeight || 1)) + 1);
-    catLabel.textContent = `${currentLabel} · ${idx}/${total}`;
+    // No "of 40" — the feed is endless, so a denominator would be a lie.
+    catLabel.textContent = `${currentLabel} · ${idx}`;
   }
-  feed.addEventListener('scroll', () => requestAnimationFrame(updateProgress), { passive: true });
+  feed.addEventListener('scroll', () => requestAnimationFrame(() => {
+    updateProgress();
+    // Fetch the next page well before the reader gets there, so the feed
+    // never visibly stops.
+    const total = feed.querySelectorAll('.card').length;
+    const idx = Math.round(feed.scrollTop / (feed.clientHeight || 1));
+    if (total - idx <= 5) loadMore();
+  }), { passive: true });
 
   // ---------- Daily 3 quiz ----------
   const quizEl = document.getElementById('quiz');
