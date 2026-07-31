@@ -601,6 +601,13 @@
     ['geopolitics', '🌍', 'Geopolitics'],
   ];
 
+  // Inside the iOS app the page is served from capacitor://localhost, so a
+  // relative /api/… would hit the app bundle rather than the backend. On the
+  // web (http/https) relative URLs are correct and keep dev and prod honest.
+  const API_BASE = /^https?:$/.test(location.protocol)
+    ? ''
+    : 'https://aminute-0eqg.onrender.com';
+
   const feed = document.getElementById('feed');
   const drawer = document.getElementById('drawer');
   const scrim = document.getElementById('scrim');
@@ -766,7 +773,7 @@
     if (loadingMore || !hasMore) return;
     loadingMore = true;
     try {
-      const res = await fetch(`/api/news?category=${currentCat}&offset=${loadedCount}`);
+      const res = await fetch(`${API_BASE}/api/news?category=${currentCat}&offset=${loadedCount}`);
       const data = await res.json();
       if (data.items && data.items.length) {
         for (const item of data.items) feed.appendChild(buildCard(item));
@@ -811,7 +818,7 @@
     hasMore = true;
     loadingMore = false;
     try {
-      const res = await fetch(`/api/news?category=${cat}&offset=0`);
+      const res = await fetch(`${API_BASE}/api/news?category=${cat}&offset=0`);
       const data = await res.json();
       // An empty feed with stories in the pool means the AI key is missing —
       // say so plainly rather than showing a generic connection error.
@@ -864,7 +871,7 @@
     if (document.hidden) return scheduleQuietRefresh(20000);
     let items;
     try {
-      const res = await fetch(`/api/news?category=${currentCat}`);
+      const res = await fetch(`${API_BASE}/api/news?category=${currentCat}`);
       items = (await res.json()).items;
     } catch { return; }
     if (!items || !items.length) return;
@@ -975,7 +982,7 @@
         if (!panel.dataset.loaded) {
           bd.textContent = '🧩 Breaking it down…';
           try {
-            const r = await fetch(`/api/explain?id=${encodeURIComponent(item.id)}`);
+            const r = await fetch(`${API_BASE}/api/explain?id=${encodeURIComponent(item.id)}`);
             const d = await r.json();
             if (!d.points || !d.points.length) throw new Error();
             panel.innerHTML = `<b class="tag">🧩 BROKEN DOWN — FOR BEGINNERS</b><ul>${
@@ -1024,7 +1031,7 @@
 
   async function fetchQuiz(attempt = 0) {
     try {
-      const r = await fetch('/api/quiz');
+      const r = await fetch(`${API_BASE}/api/quiz`);
       if (!r.ok) throw new Error();
       quizData = await r.json();
       if (quizData && quizData.questions) { quizFab.classList.add('show'); return; }
@@ -1142,32 +1149,60 @@
   });
 
   // ---------- Daily reminder ----------
-  // Stores the preference and secures permission now. Actual delivery is wired
-  // at wrap time via Capacitor LocalNotifications (on-device schedule — needs
-  // no server and no APNs certificates).
+  // Uses Capacitor LocalNotifications when running as the iOS app: the
+  // notification is scheduled BY THE DEVICE, so there is no notification
+  // server, no APNs certificate and no per-message cost, and it fires even
+  // with no signal. On the web there is no reliable daily scheduler, so the
+  // preference is stored and honoured once the app is installed.
   const reminderBtn = document.getElementById('reminderBtn');
   const reminderState = document.getElementById('reminderState');
+  const REMINDER_ID = 1;
+  const nativeNotifications = () => window.Capacitor?.Plugins?.LocalNotifications;
+
   function paintReminder() {
     const on = localStorage.getItem('reminder') === '1';
     reminderState.textContent = on ? '8:00 am' : 'Off';
     reminderState.classList.toggle('on', on);
   }
+
+  async function enableReminder() {
+    const LN = nativeNotifications();
+    if (LN) {
+      const perm = await LN.requestPermissions();
+      if (perm.display !== 'granted') return { ok: false, why: 'Notifications are off in iOS Settings' };
+      await LN.cancel({ notifications: [{ id: REMINDER_ID }] });
+      await LN.schedule({
+        notifications: [{
+          id: REMINDER_ID,
+          title: 'Your minute is ready',
+          body: "Today's business, finance and geopolitics — in about a minute.",
+          schedule: { on: { hour: 8, minute: 0 }, repeats: true, allowWhileIdle: true },
+        }],
+      });
+      return { ok: true, why: 'Reminder set for 8:00 am' };
+    }
+    // Web: no dependable daily scheduler, so record the choice for the app.
+    if ('Notification' in window && Notification.permission !== 'granted') {
+      if (await Notification.requestPermission() !== 'granted') {
+        return { ok: false, why: 'Notifications blocked in browser settings' };
+      }
+    }
+    return { ok: true, why: 'Saved — reminders arrive in the app' };
+  }
+
   reminderBtn.onclick = async () => {
-    const on = localStorage.getItem('reminder') === '1';
-    if (on) {
+    if (localStorage.getItem('reminder') === '1') {
       localStorage.setItem('reminder', '0');
+      await nativeNotifications()?.cancel({ notifications: [{ id: REMINDER_ID }] });
       paintReminder();
       showToast('Daily reminder off');
       return;
     }
-    let granted = true;
-    if ('Notification' in window && Notification.permission !== 'granted') {
-      granted = (await Notification.requestPermission()) === 'granted';
-    }
-    if (!granted) { showToast('Notifications blocked in settings'); return; }
+    const res = await enableReminder();
+    if (!res.ok) { showToast(res.why); return; }
     localStorage.setItem('reminder', '1');
     paintReminder();
-    showToast('Reminder set for 8:00 am');
+    showToast(res.why);
   };
   paintReminder();
 

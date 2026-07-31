@@ -2,7 +2,7 @@
   "name": "aminute",
   "version": "1.0.0",
   "private": true,
-  "description": "aminute — business, finance and geopolitics in 60 words, with the context, the why, and the jargon explained.",
+  "description": "aminute \u2014 business, finance and geopolitics in 60 words, with the context, the why, and the jargon explained.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,5 +11,11 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/ios": "^8.5.0",
+    "@capacitor/local-notifications": "^8.2.1"
   }
 }

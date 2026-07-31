@@ -1,0 +1,19 @@
+{
+  "appId": "com.latetothegam3.aminute",
+  "appName": "aminute",
+  "webDir": "public",
+  "server": {
+    "androidScheme": "https",
+    "iosScheme": "capacitor"
+  },
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#f0ebdd"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon",
+      "iconColor": "#0C6B5C"
+    }
+  }
+}

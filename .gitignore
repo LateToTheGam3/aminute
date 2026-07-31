@@ -7,3 +7,10 @@ node_modules/
 .DS_Store
 *.log
 provenance.jsonl
+
+# Capacitor / iOS build artefacts
+ios/App/App/public/
+ios/App/Pods/
+ios/App/build/
+ios/.sourcemaps/
+DerivedData/
