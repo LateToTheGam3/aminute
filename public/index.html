@@ -141,12 +141,24 @@
     position: relative;
   }
   .card .img {
-    height: 34%;
-    min-height: 180px;
+    height: 26%;
+    min-height: 130px;
     background: var(--line);
-    background-size: cover;
-    background-position: center;
     flex-shrink: 0;
+  }
+  .card .cover {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    padding: 14px 20px;
+  }
+  .cover-mark {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text-2);
+    opacity: 0.75;
   }
   .card .body {
     flex: 1;
@@ -729,9 +741,11 @@
       const data = await res.json();
       if (data.items && data.items.length) {
         for (const item of data.items) feed.appendChild(buildCard(item));
-        loadedCount += data.items.length;
         updateProgress();
       }
+      // Advance by the window the server consumed, not the cards it returned:
+      // stories rejected by the accuracy guards are skipped, not retried.
+      loadedCount = data.nextOffset ?? (loadedCount + (data.items?.length || 0));
       hasMore = !!data.hasMore;
     } catch {
       // Offline or server down — keep what we have and try again later.
@@ -774,7 +788,7 @@
       // Served from cache because the server was unreachable — say so.
       stale = res.headers.get('x-from-cache') === '1';
       setOnlineState();
-      loadedCount = data.items.length;
+      loadedCount = data.nextOffset ?? data.items.length;
       hasMore = !!data.hasMore;
       render(data.items);
     } catch (e) {
@@ -830,14 +844,34 @@
     if (pending) scheduleQuietRefresh(45000);
   }
 
+  // Generated cover instead of the publisher's photograph. Feed images are
+  // almost always agency-licensed (Getty, Reuters, AP), and those agencies
+  // enforce far harder than newspapers do. This is deterministic per story,
+  // needs no network, and can never be a rights problem.
+  const COVER_HUES = { business: 168, finance: 150, geopolitics: 196, all: 174 };
+  function buildCover(item) {
+    let h = 0;
+    for (const ch of item.id || item.title) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    const base = COVER_HUES[item.category] ?? 174;
+    const hue = (base + (h % 40) - 20 + 360) % 360;
+    const angle = 110 + (h % 140);
+    const dark = document.body.dataset.theme === 'dark';
+    const c1 = `hsl(${hue} ${dark ? 38 : 46}% ${dark ? 17 : 82}%)`;
+    const c2 = `hsl(${(hue + 34) % 360} ${dark ? 30 : 40}% ${dark ? 11 : 70}%)`;
+    const label = (item.sources && item.sources.length > 1)
+      ? `${item.sources.length} sources`
+      : esc(item.source);
+    return `<div class="img cover" style="background:linear-gradient(${angle}deg, ${c1}, ${c2})">
+        <span class="cover-mark">${esc(label)}</span>
+      </div>`;
+  }
+
   function buildCard(item) {
     {
       const card = document.createElement('article');
       card.className = 'card';
       if (item.whyItMatters) card.dataset.enriched = '1';
-      const img = item.image
-        ? `<div class="img" style="background-image:url('${item.image.replace(/'/g, "%27")}')"></div>`
-        : `<div class="img" style="display:grid;place-items:center;font-size:52px">📰</div>`;
+      const img = buildCover(item);
       const whyHtml = item.whyItMatters
         ? `<div class="why"><b>WHY IT MATTERS</b>${annotate(item.whyItMatters, item.jargon)}</div>`
         : '';

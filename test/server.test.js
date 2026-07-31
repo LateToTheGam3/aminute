@@ -10,6 +10,7 @@ const assert = require('node:assert');
 const {
   decodeEntities, sourceFromLink, parseFeed,
   interleaveBySource, chooseSummary, verifyAgainstSource,
+  longestSharedRun, clusterStories, isBlocked, isPublishable, isLiveBlog,
   rateLimited, FEEDS,
 } = require('../server.js');
 
@@ -182,6 +183,77 @@ describe('verifyAgainstSource (hallucination guard)', () => {
   test('thousands separators do not trigger a false positive', () => {
     const src = 'The scheme covers 330,000 residents.';
     assert.equal(verifyAgainstSource('Some 330,000 residents qualify.', src).ok, true);
+  });
+});
+
+describe('longestSharedRun (plagiarism guard)', () => {
+  const src = 'Under the terms of the deal, Argos will still operate in Sainsburys shops and offer Nectar points.';
+
+  test('flags a lifted phrase', () => {
+    const lifted = 'Argos will still operate in Sainsburys shops and offer Nectar points to customers.';
+    assert.ok(longestSharedRun(lifted, src) >= 9, 'should detect the lifted run');
+  });
+
+  test('genuine rewriting scores low', () => {
+    const rewritten = 'The retailer keeps its concessions inside supermarkets, and loyalty rewards continue unchanged.';
+    assert.ok(longestSharedRun(rewritten, src) < 9);
+  });
+
+  test('handles empty input', () => {
+    assert.equal(longestSharedRun('', src), 0);
+    assert.equal(longestSharedRun('anything', ''), 0);
+  });
+});
+
+describe('isLiveBlog', () => {
+  test('catches rolling live blogs, which conflate unrelated stories', () => {
+    assert.equal(isLiveBlog('UK petrol prices rise as US attacks Iran – business live', ''), true);
+    assert.equal(isLiveBlog('Markets live updates', ''), true);
+    assert.equal(isLiveBlog('Budget 2026 – live', ''), true);
+    assert.equal(isLiveBlog('Something happened', 'Live, rolling coverage as the AA reports prices'), true);
+  });
+
+  test('leaves ordinary articles alone', () => {
+    assert.equal(isLiveBlog("Sainsbury's agrees to sell Argos for £120m", 'Under the terms of the deal…'), false);
+    assert.equal(isLiveBlog('Olive oil prices fall', ''), false);
+  });
+});
+
+describe('isBlocked', () => {
+  test('respects the publisher opt-out list', () => {
+    // Populated from BLOCKED_DOMAINS; empty by default, so nothing is blocked.
+    assert.equal(isBlocked('https://www.bbc.co.uk/news/x'), false);
+  });
+});
+
+describe('isPublishable', () => {
+  test('a card holding the publisher\'s own words is never publishable', () => {
+    assert.equal(isPublishable({ whyItMatters: 'x' }), false);       // not rewritten
+    assert.equal(isPublishable({ rewritten: true }), false);          // no why-line
+    assert.equal(isPublishable({ rewritten: true, whyItMatters: 'x' }), true);
+  });
+});
+
+describe('clusterStories', () => {
+  test('merges the same event across publishers into one card', () => {
+    const items = [
+      { title: 'Sainsbury agrees to sell Argos for £120m', source: 'BBC News', url: 'a', summary: 'short' },
+      { title: 'Sainsbury sells Argos chain in £120m deal', source: 'The Guardian', url: 'b', summary: 'a much longer account of the deal' },
+      { title: 'Olive oil prices fall sharply', source: 'City AM', url: 'c', summary: 'unrelated' },
+    ];
+    const out = clusterStories(items);
+    assert.equal(out.length, 2, 'the two Argos reports should merge');
+    const merged = out.find((i) => i.sources.length > 1);
+    assert.equal(merged.sources.length, 2);
+    assert.match(merged.summary, /longer account/, 'the fullest account should lead');
+  });
+
+  test('never merges two stories from the same publisher', () => {
+    const items = [
+      { title: 'Bank raises rates again today', source: 'BBC News', url: 'a', summary: '' },
+      { title: 'Bank raises rates again tomorrow', source: 'BBC News', url: 'b', summary: '' },
+    ];
+    assert.equal(clusterStories(items).length, 2);
   });
 });
 

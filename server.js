@@ -33,6 +33,16 @@ const GEOPOLITICS_FEEDS = [
   'https://www.aljazeera.com/xml/rss/all.xml',
 ];
 
+// Publishers who have asked not to be included. Add a domain here and every
+// card from them disappears on the next refresh — no code change, no deploy
+// argument. Honour any request immediately; see TAKEDOWN.md.
+const BLOCKED_DOMAINS = (process.env.BLOCKED_DOMAINS || '')
+  .split(',').map((d) => d.trim().toLowerCase()).filter(Boolean);
+
+function isBlocked(url) {
+  return BLOCKED_DOMAINS.some((d) => (url || '').toLowerCase().includes(d));
+}
+
 const FEEDS = {
   all: [...BUSINESS_FEEDS, ...FINANCE_FEEDS, ...GEOPOLITICS_FEEDS],
   business: BUSINESS_FEEDS,
@@ -47,7 +57,7 @@ const cache = new Map(); // category -> { at, items }
 // capping at one screenful. Pages are enriched on demand as the reader
 // arrives at them.
 const POOL_MAX = 300;
-const PAGE_SIZE = 15;
+const PAGE_SIZE = 8;
 
 // Dedupe by title, then round-robin across sources rather than sorting purely
 // by date. A prolific publisher (CNBC posts many times an hour; City AM a few
@@ -78,6 +88,53 @@ function interleaveBySource(items, limit) {
     }
   }
   return mixed;
+}
+
+// Words that carry no identifying weight when matching two headlines.
+const STOPWORDS = new Set(('the a an and or but in on at to for of with as by from is are was were be been ' +
+  'has have had will would could should says said after over new more than that this it its his her their ' +
+  'about into out up down who what when why how amid ahead against').split(' '));
+
+function headlineKeywords(title) {
+  return new Set((title.toLowerCase().match(/[a-z][a-z'-]{3,}/g) || []).filter((w) => !STOPWORDS.has(w)));
+}
+
+// Group the same event as reported by different publishers. Two things follow:
+// the model can write from several independent accounts rather than
+// paraphrasing one publisher's words, and the reader sees one card per story
+// with the corroborating outlets named.
+function clusterStories(items) {
+  const kws = items.map((i) => headlineKeywords(i.title));
+  const taken = new Array(items.length).fill(false);
+  const primaries = [];
+
+  for (let i = 0; i < items.length; i++) {
+    if (taken[i]) continue;
+    taken[i] = true;
+    const group = [items[i]];
+
+    for (let j = i + 1; j < items.length; j++) {
+      if (taken[j] || items[j].source === items[i].source) continue;
+      const shared = [...kws[i]].filter((w) => kws[j].has(w)).length;
+      const smaller = Math.min(kws[i].size, kws[j].size) || 1;
+      // Two reports of the same event often share only the company and the
+      // subject ("Sainsbury", "Argos"), so a flat 3-word rule misses them.
+      // Requiring two shared terms AND half the smaller headline keeps
+      // unrelated stories apart — merging those produces a card that welds
+      // separate events together.
+      if (shared >= 3 || (shared >= 2 && shared / smaller >= 0.5)) {
+        group.push(items[j]);
+        taken[j] = true;
+      }
+    }
+
+    // Lead with whichever account carries the most detail to write from.
+    group.sort((a, b) => (b.summary || '').length - (a.summary || '').length);
+    const primary = group[0];
+    primary.sources = group.map((g) => ({ name: g.source, url: g.url, text: g.summary || '' }));
+    primaries.push(primary);
+  }
+  return primaries;
 }
 
 // Prefer the AI summary when it is substantial. Picking "whichever is longer"
@@ -124,6 +181,31 @@ function verifyAgainstSource(summary, sourceText) {
   return { ok: true };
 }
 
+// Longest run of consecutive words shared with the source. Asking a model for
+// 60 words from one article reliably produces text that mirrors its structure
+// and reuses its distinctive phrasing — the failure you never notice unless
+// you diff the two. Anything past a short run is lifting, not summarising.
+function longestSharedRun(summary, sourceText) {
+  const words = (s) => (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
+  const a = words(summary);
+  const b = words(sourceText);
+  if (!a.length || !b.length) return 0;
+
+  let best = 0;
+  let prev = new Array(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = new Array(b.length + 1).fill(0);
+    for (let j = 1; j <= b.length; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        cur[j] = prev[j - 1] + 1;
+        if (cur[j] > best) best = cur[j];
+      }
+    }
+    prev = cur;
+  }
+  return best;
+}
+
 function decodeEntities(s) {
   return s
     .replace(/<!\[CDATA\[(.*?)\]\]>/gs, '$1')
@@ -161,6 +243,19 @@ function sourceFromLink(link, fallback) {
   return hit ? hit[1] : fallback;
 }
 
+// Rolling live blogs are a single feed item covering many unrelated stories.
+// Summarising one produces a card that welds separate events together —
+// "Fuel prices hit 160p as AI hedge fund collapses" — which is inaccurate
+// however faithful the individual facts are.
+function isLiveBlog(title, description) {
+  if (/[-–—]\s*(business|markets?|politics|sport)?\s*live\b/i.test(title)) return true;
+  if (/\blive (updates?|blog|coverage|reaction)\b/i.test(title)) return true;
+  if (/^live[:\s]/i.test(title)) return true;
+  // Live, rolling coverage… is the Guardian's own standfirst wording.
+  if (/\b(live,? rolling coverage|as it happened)\b/i.test(description || '')) return true;
+  return false;
+}
+
 function parseFeed(xml, category) {
   const channelTitle = tag(xml.split('<item>')[0] || '', 'title') || 'News';
   const items = [];
@@ -176,19 +271,18 @@ function parseFeed(xml, category) {
       .trim();
     const link = tag(block, 'link');
     const pubDate = tag(block, 'pubDate');
-    let image =
-      attr(block, 'media:thumbnail', 'url') ||
-      attr(block, 'media:content', 'url') ||
-      attr(block, 'enclosure', 'url');
-    // Ask BBC's image CDN for a wider rendition when possible.
-    image = image.replace(/\/ic\/\d+x\d+\//, '/ic/1024x576/');
+    // Deliberately NOT reading media:thumbnail / media:content / enclosure.
+    // Feed images are almost always agency-licensed (Getty, Reuters, AP) and
+    // those agencies enforce far more aggressively than the newspapers do.
+    // A licence to read a feed is not a licence to republish its photographs.
+    // Cards render a generated cover instead — see buildCover() in the client.
     if (!title || !link) continue;
+    if (isLiveBlog(title, description)) continue;
     items.push({
       id: crypto.createHash('sha256').update(link).digest('base64url').slice(0, 16),
       title,
       summary: description,
       url: link,
-      image,
       source: sourceFromLink(link, channelTitle.replace(/\s*[-–—].*$/, '')),
       publishedAt: pubDate ? new Date(pubDate).toISOString() : null,
       category,
@@ -197,40 +291,11 @@ function parseFeed(xml, category) {
   return items;
 }
 
-// CNBC / MarketWatch / Al Jazeera RSS items carry no thumbnail — pull the
-// article's og:image instead. Cached per URL so each article is fetched once.
-const ogImageCache = new Map();
-async function fetchOgImage(url) {
-  if (ogImageCache.has(url)) return ogImageCache.get(url);
-  let image = '';
-  try {
-    const res = await fetch(url, {
-      headers: { 'user-agent': 'Mozilla/5.0 (compatible; inshorts-clone/1.0)' },
-      signal: AbortSignal.timeout(4000),
-      redirect: 'follow',
-    });
-    const html = (await res.text()).slice(0, 200_000);
-    const m =
-      html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/) ||
-      html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/) ||
-      html.match(/<meta[^>]+name="twitter:image"[^>]+content="([^"]+)"/);
-    if (m) image = decodeEntities(m[1]);
-  } catch {}
-  ogImageCache.set(url, image);
-  return image;
-}
-
-async function enrichImages(items, limit = 30) {
-  const missing = items.filter((i) => !i.image).slice(0, limit);
-  const BATCH = 8;
-  for (let n = 0; n < missing.length; n += BATCH) {
-    await Promise.all(
-      missing.slice(n, n + BATCH).map(async (item) => {
-        item.image = await fetchOgImage(item.url);
-      })
-    );
-  }
-}
+// NOTE: there is deliberately no image pipeline here. An earlier version
+// fetched each article's og:image, which meant (a) republishing agency-
+// licensed photographs and (b) fetching the publisher's page itself. Both
+// are risks a news aggregator does not need to take. Covers are generated
+// client-side from the story's own metadata instead.
 
 // --- AI enrichment (optional) ---------------------------------------------
 // When GEMINI_API_KEY is set, each story gets: an original ~60-word summary,
@@ -257,43 +322,85 @@ const aiCache = new Map(); // item.id -> {summary, whyItMatters, jargon}
 async function aiEnrichOne(item) {
   if (aiCache.has(item.id)) return aiCache.get(item.id);
   if (!aiBudgetOk()) return null;
-  const prompt = `You write news cards for a UK student preparing for finance/consulting/law job interviews (building "commercial awareness"). Given this news story:
 
-HEADLINE: ${item.title}
-TEXT: ${item.summary}
-SOURCE: ${item.source}
+  // Write from every account of the story we have, not from one publisher's
+  // prose. With a single short source the model tends to mirror its sentence
+  // structure and lift its distinctive phrasing; with several it has facts to
+  // work from instead of text to paraphrase.
+  const accounts = (item.sources && item.sources.length ? item.sources : [
+    { name: item.source, text: item.summary || '' },
+  ]);
+  const material = accounts
+    .map((a, n) => `ACCOUNT ${n + 1} (${a.name}): ${a.text}`)
+    .join('\n');
+  const materialWords = accounts.reduce(
+    (n, a) => n + (a.text || '').split(/\s+/).filter(Boolean).length, 0);
 
-Return ONLY a JSON object with exactly these fields:
+  // Some feed entries carry only a pull-quote ("You never know, maybe I'll
+  // win."). There is nothing to summarise, and asking anyway produces a card
+  // that says nothing — or invents the rest. Skip the story instead.
+  if (materialWords < 14) return null;
+
+  // Length must follow the evidence. A BBC feed entry is ~20 words; padding
+  // that to 60 means inventing the difference, and takes proportionally all
+  // of a very short piece.
+  const target = materialWords < 45 ? '25-35 words, 2 sentences'
+    : materialWords < 90 ? '35-50 words, 2-3 sentences'
+    : '45-60 words, 3 sentences';
+
+  const prompt = `You write news cards for a UK student building "commercial awareness" for finance, consulting and law interviews.
+
+STORY AS REPORTED (${accounts.length} independent account${accounts.length > 1 ? 's' : ''}):
+${material}
+
+Write from the FACTS these accounts share. Do not follow any single account's sentence structure, and do not reuse its distinctive phrasing — if a phrase is memorable, rewrite it. Your text must stand on its own as original prose.
+
+Return ONLY a JSON object:
 {
-  "headline": "a punchy, curiosity-grabbing headline for this story, max 9 words, factually accurate, no clickbait lies",
-  "summary": "an ORIGINAL summary in plain English, 45-60 words and ALWAYS at least 3 full sentences — never one line. Write it yourself, do not copy the source. If the source text is thin, add the essential background a reader needs (who is involved, the scale, what led to it) so the card still stands on its own.",
-  "why_it_matters": "EXACTLY 2 sentences, 30-45 words total. First sentence: the commercial or market consequence. Second sentence: why a candidate should care — what it signals about the sector, or how they could use it in an interview answer. Never one line.",
-  "jargon": [{"term": "a technical term that appears in your summary", "meaning": "max 15 words, simple English"}]
+  "headline": "your OWN headline, max 9 words. Make it genuinely intriguing — lead with the surprising fact, the tension or the number that makes a reader want to know more. It must remain strictly accurate: no invented drama, no question-bait, and never reuse the publisher's headline wording.",
+  "summary": "ORIGINAL prose, ${target}. Plain English.",
+  "why_it_matters": "EXACTLY 2 sentences, 30-45 words. First: the commercial or market consequence. Second: why a candidate should care — what it signals about the sector, or how they could use it in an interview answer.",
+  "jargon": [{"term": "a technical term appearing verbatim in your summary", "meaning": "max 15 words, simple English"}]
 }
-Include 0-3 jargon items, only genuinely technical terms a beginner wouldn't know. Terms must appear verbatim in your summary.
+Include 0-3 jargon items, only terms a beginner genuinely would not know.
 
-ACCURACY RULES — these override everything above. This text is published about real, named people and companies:
-- Use ONLY facts stated in the source text. Never add figures, dates, percentages, names or quotes that are not there.
+ACCURACY RULES — these override everything above. This is published text about real, named people and companies:
+- Use ONLY facts present in the accounts above. Never add figures, dates, percentages, names or quotes that are not there.
 - Never invent direct speech. Do not put words in anyone's mouth.
-- Never speculate about a named individual's motives, guilt, health or private life. Report only what the source reports.
-- If the source is thin, write less and stay general. Do NOT fill the gap by inventing specifics.
-- Attribute contested claims ("the company said", "prosecutors allege") rather than stating them as fact.`;
+- Never speculate about a named individual's motives, guilt, health or private life.
+- If the accounts are thin, write LESS. Never fill a word count by inventing specifics.
+- Attribute contested claims ("the company said", "prosecutors allege") rather than asserting them.`;
   const parsed = await geminiJSON(prompt, 14000);
   if (!parsed || !parsed.summary) return null;
 
   const aiSummary = String(parsed.summary).trim();
   const feedSummary = (item.summary || '').trim();
+  const aiHeadline = parsed.headline ? String(parsed.headline).trim() : null;
 
-  // Never publish an unverifiable claim about a real person or company.
-  const source = `${item.origTitle || item.title} ${feedSummary}`;
+  // Verify against every account we were given, not just the primary.
+  const source = [item.title, ...accounts.map((a) => a.text)].join(' ');
+
   const check = verifyAgainstSource(aiSummary, source);
   if (!check.ok) {
-    console.warn(`[hallucination guard] ${check.reason} — ${item.title.slice(0, 60)}`);
-    return null; // card keeps the publisher's own words
+    console.warn(`[guard] ${check.reason} — ${item.title.slice(0, 60)}`);
+    return null;
+  }
+
+  // Derivative text is a copyright problem, not a quality one.
+  const run = longestSharedRun(aiSummary, source);
+  if (run >= 9) {
+    console.warn(`[guard] lifted ${run}-word phrase — ${item.title.slice(0, 60)}`);
+    return null;
+  }
+
+  // A verbatim publisher headline is the single easiest thing to point at.
+  if (!aiHeadline || longestSharedRun(aiHeadline, item.title) >= 6) {
+    console.warn(`[guard] headline too close to source — ${item.title.slice(0, 60)}`);
+    return null;
   }
 
   const out = {
-    headline: parsed.headline ? String(parsed.headline) : null,
+    headline: aiHeadline,
     summary: chooseSummary(aiSummary, feedSummary),
     whyItMatters: parsed.why_it_matters ? String(parsed.why_it_matters) : null,
     jargon: Array.isArray(parsed.jargon)
@@ -308,17 +415,20 @@ ACCURACY RULES — these override everything above. This text is published about
 }
 
 function applyEnrichment(item, out) {
-  if (!out) return;
-  if (out.headline) { item.origTitle = item.title; item.title = out.headline; }
+  if (!out || !out.headline) return;
+  item.origTitle = item.title;
+  item.title = out.headline;
   item.summary = out.summary;
   item.whyItMatters = out.whyItMatters;
   item.jargon = out.jargon;
+  item.rewritten = true;
+  logProvenance(item, out);
 }
 
 // Paced worker pool. Concurrency 2 (not 4) because the free tier throttles
 // bursts, and a throttled call used to mean a card silently lost its
 // "why it matters" line entirely.
-async function enrichRange(list) {
+async function enrichRange(list, workers = 3) {
   const queue = [...list];
   const worker = async () => {
     while (queue.length) {
@@ -327,7 +437,7 @@ async function enrichRange(list) {
       await sleep(250);
     }
   };
-  await Promise.all([worker(), worker()]);
+  await Promise.all(Array.from({ length: workers }, worker));
 }
 
 // Enrich the top of the feed before responding so the first cards are always
@@ -337,6 +447,32 @@ async function enrichAI(items, blocking = 12) {
   if (!GEMINI_KEY) return;
   await enrichRange(items.slice(0, blocking));
   enrichRange(items.slice(blocking)).catch(() => {});
+}
+
+// Append-only audit trail: which feed, which article, when, and exactly what
+// we published. If a complaint arrives, provenance is provable and the card
+// can be pulled in minutes rather than reconstructed from memory.
+const PROVENANCE_LOG = process.env.PROVENANCE_LOG || path.join(__dirname, 'provenance.jsonl');
+function logProvenance(item, out) {
+  const record = {
+    at: new Date().toISOString(),
+    id: item.id,
+    sourceName: item.source,
+    sourceUrl: item.url,
+    sourceHeadline: item.origTitle,
+    sourceText: (item.sources || []).map((a) => ({ name: a.name, url: a.url, text: a.text })),
+    publishedHeadline: out.headline,
+    publishedSummary: out.summary,
+    publishedWhy: out.whyItMatters,
+    model: GEMINI_MODEL,
+  };
+  fs.appendFile(PROVENANCE_LOG, JSON.stringify(record) + '\n', () => {});
+}
+
+// A card is publishable only once it carries our own headline and prose.
+// Until then it holds the publisher's words, and must not be served.
+function isPublishable(item) {
+  return !!(item.rewritten && item.whyItMatters);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -458,7 +594,10 @@ async function getNews(category) {
   // the feed would read as all-American. Within each source: newest first.
   // Keep the whole pool, not a fixed 40 — the feed is paginated so the reader
   // can keep going. Round-robin mixing still applies across the full pool.
-  items = interleaveBySource(items, POOL_MAX);
+  // Honour opt-outs before anything else touches the story.
+  items = items.filter((i) => !isBlocked(i.url));
+  // Merge the same story across publishers first, then balance the sources.
+  items = interleaveBySource(clusterStories(items), POOL_MAX);
 
   for (const item of items) {
     item.whyItMatters = item.whyItMatters ?? null;
@@ -467,7 +606,6 @@ async function getNews(category) {
   // Images are cheap and make the first paint look right; AI enrichment is
   // done per page in the request handler so the first load isn't held up
   // waiting for stories the reader may never reach.
-  await enrichImages(items, 30);
 
   if (items.length) cache.set(category, { at: Date.now(), items });
   return items;
@@ -549,18 +687,23 @@ const server = http.createServer(async (req, res) => {
       const n = (v, d) => { const x = parseInt(v, 10); return Number.isFinite(x) ? x : d; };
       const offset = Math.max(0, n(url.searchParams.get('offset'), 0));
       const limit = Math.min(30, Math.max(1, n(url.searchParams.get('limit'), PAGE_SIZE)));
-      const items = all.slice(offset, offset + limit);
+      const window = all.slice(offset, offset + limit);
 
-      // Enrich just this page: the first few before responding so the cards
-      // the reader lands on are complete, the rest filled in behind them.
-      await enrichAI(items, Math.min(5, items.length));
+      // Rewrite the whole window before responding. A card that still holds
+      // the publisher's headline and blurb must never reach a screen, so we
+      // wait rather than serve it and fix it later.
+      await enrichAI(window, window.length);
+      const items = window.filter(isPublishable);
 
       return send(res, 200, {
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store',
       }, JSON.stringify({
         category, offset, count: items.length, total: all.length,
-        hasMore: offset + items.length < all.length, items,
+        // Advance by the window consumed, not the cards returned, or items
+        // rejected by the guards would be requested forever.
+        nextOffset: offset + window.length,
+        hasMore: offset + window.length < all.length, items,
       }));
     } catch (err) {
       console.error('[news]', err);
@@ -648,5 +791,6 @@ if (require.main === module) {
 module.exports = {
   decodeEntities, tag, attr, sourceFromLink, parseFeed,
   interleaveBySource, chooseSummary, verifyAgainstSource,
+  longestSharedRun, clusterStories, isBlocked, isPublishable, isLiveBlog,
   rateLimited, clientIp, FEEDS, SECURITY_HEADERS,
 };
