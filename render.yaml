@@ -1,0 +1,24 @@
+# Render Blueprint — lets you deploy by pointing Render at this repo rather
+# than filling in a form. Render reads this file and configures the service.
+#
+# GEMINI_API_KEY is marked sync:false so it is NEVER stored in this repo;
+# Render prompts you for it once, in its own encrypted settings.
+services:
+  - type: web
+    name: aminute
+    runtime: node
+    plan: free
+    region: frankfurt          # closest Render region to UK readers
+    branch: main
+    buildCommand: ""           # zero dependencies — nothing to install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false            # you paste this into Render's dashboard
+      - key: GEMINI_MODEL
+        value: gemini-flash-lite-latest
+      - key: AI_DAILY_MAX
+        value: "600"           # hard ceiling on AI calls per day
+      - key: BLOCKED_DOMAINS
+        value: ""              # add a publisher domain here to drop them
