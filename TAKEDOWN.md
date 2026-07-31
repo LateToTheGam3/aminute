@@ -13,10 +13,19 @@ photographs.
   facts, and are automatically rejected before publication if they reuse a
   run of the publisher's wording (see `longestSharedRun` in `server.js`) or
   stay too close to the publisher's headline.
-- **Use no publisher or agency images.** Feed image enclosures are ignored
-  entirely. Card covers are generated. Wire photographs are usually licensed
-  from Getty, Reuters or AP, and a feed licence is not a licence to
-  republish them.
+- **Display the publisher's own feed image, credited.** The photograph is
+  hot-linked from the publisher's CDN — never copied, never re-hosted — and
+  the source is captioned on the card. If they remove or move the file, it
+  vanishes from our cards immediately.
+
+  > ⚠️ **This is the project's largest known legal exposure, accepted
+  > deliberately.** Wire photographs are frequently licensed from Getty,
+  > Reuters or AP; that licence runs to the publisher and does not extend to
+  > us. Agencies enforce harder than newspapers and typically bill per
+  > image. Every image URL is recorded in `provenance.jsonl`, and
+  > `BLOCKED_DOMAINS` removes a publisher's cards and images together
+  > without a deploy. If an agency makes contact, remove the publisher
+  > first and reply second.
 - **Attribute and link.** Every card names its source and links to the
   original. Where several outlets carry the same story, all are named.
 - **Keep an audit trail.** `provenance.jsonl` records, for every card: the

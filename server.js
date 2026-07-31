@@ -275,11 +275,23 @@ function parseFeed(xml, category) {
       .trim();
     const link = tag(block, 'link');
     const pubDate = tag(block, 'pubDate');
-    // Deliberately NOT reading media:thumbnail / media:content / enclosure.
-    // Feed images are almost always agency-licensed (Getty, Reuters, AP) and
-    // those agencies enforce far more aggressively than the newspapers do.
-    // A licence to read a feed is not a licence to republish its photographs.
-    // Cards render a generated cover instead — see buildCover() in the client.
+    // Feed-supplied image, hot-linked from the publisher's own CDN — we never
+    // copy or re-host it, so removing one is instant.
+    //
+    // KNOWN RISK, ACCEPTED DELIBERATELY: these photographs are frequently
+    // agency-licensed (some City AM URLs contain "GettyImage" outright), and
+    // that licence runs to the publisher, not onward to us. Agencies enforce
+    // harder than newspapers, typically per image. Mitigations: the source is
+    // credited on every card, the image URL is recorded in provenance.jsonl,
+    // and BLOCKED_DOMAINS removes a publisher's cards — images included —
+    // without a deploy. See TAKEDOWN.md.
+    let image =
+      attr(block, 'media:thumbnail', 'url') ||
+      attr(block, 'media:content', 'url') ||
+      attr(block, 'enclosure', 'url') ||
+      (tag(block, 'description').match(/<img[^>]+src="([^"]+)"/) || [])[1] || '';
+    // Ask the BBC's image CDN for a wider rendition than the feed's default.
+    image = image.replace(/\/ace\/standard\/\d+\//, '/ace/standard/800/');
     if (!title || !link) continue;
     if (isLiveBlog(title, description)) continue;
     items.push({
@@ -287,6 +299,7 @@ function parseFeed(xml, category) {
       title,
       summary: description,
       url: link,
+      image,
       source: sourceFromLink(link, channelTitle.replace(/\s*[-–—].*$/, '')),
       publishedAt: pubDate ? new Date(pubDate).toISOString() : null,
       category,
@@ -475,6 +488,7 @@ function logProvenance(item, out) {
     sourceName: item.source,
     sourceUrl: item.url,
     sourceHeadline: item.origTitle,
+    imageUrl: item.image || null,
     sourceText: (item.sources || []).map((a) => ({ name: a.name, url: a.url, text: a.text })),
     publishedHeadline: out.headline,
     publishedSummary: out.summary,
