@@ -729,6 +729,9 @@ const server = http.createServer(async (req, res) => {
         'cache-control': 'no-store',
       }, JSON.stringify({
         category, offset, count: items.length, total: all.length,
+        // Distinguishes "no news" from "the server is misconfigured", so a
+        // missing API key on deploy is diagnosable instead of a blank screen.
+        aiConfigured: !!GEMINI_KEY,
         // Advance by the window consumed, not the cards returned, or items
         // rejected by the guards would be requested forever.
         nextOffset: offset + window.length,
@@ -814,6 +817,15 @@ server.on('error', (err) => {
 if (require.main === module) {
   server.listen(PORT, () => {
     console.log(`aminute running at http://localhost:${PORT}`);
+    if (!GEMINI_KEY) {
+      console.error(
+        '\n!!! GEMINI_API_KEY is not set.\n' +
+        '    Cards are only published once rewritten in our own words, so\n' +
+        '    WITHOUT THIS KEY THE FEED WILL BE EMPTY.\n' +
+        '    Set it in Render: Dashboard -> aminute -> Environment.\n' +
+        '    Locally: put it in inshorts-clone/.env and use `npm run dev`.\n'
+      );
+    }
   });
 }
 

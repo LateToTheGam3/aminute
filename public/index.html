@@ -813,6 +813,17 @@
     try {
       const res = await fetch(`/api/news?category=${cat}&offset=0`);
       const data = await res.json();
+      // An empty feed with stories in the pool means the AI key is missing —
+      // say so plainly rather than showing a generic connection error.
+      if (data.aiConfigured === false) {
+        feed.innerHTML = `<div class="state">
+          <div style="font-size:40px">🔑</div>
+          <div><strong>Setup incomplete</strong><br>
+          GEMINI_API_KEY isn't set on the server, so no stories can be
+          published.<br>Add it under Environment in your Render dashboard.</div>
+        </div>`;
+        return;
+      }
       if (!data.items || !data.items.length) throw new Error('empty');
       // Served from cache because the server was unreachable — say so.
       stale = res.headers.get('x-from-cache') === '1';
