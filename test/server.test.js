@@ -11,7 +11,7 @@ const {
   decodeEntities, sourceFromLink, parseFeed,
   interleaveBySource, chooseSummary, verifyAgainstSource,
   longestSharedRun, clusterStories, isBlocked, isPublishable, isLiveBlog,
-  rateLimited, FEEDS,
+  applyEnrichment, rateLimited, FEEDS,
 } = require('../server.js');
 
 describe('decodeEntities', () => {
@@ -125,16 +125,19 @@ describe('interleaveBySource', () => {
 
 describe('chooseSummary', () => {
   const ai = 'One. Two. Three. ' + 'word '.repeat(30);
-  const longFeedDump = 'raw '.repeat(200);
 
-  test('prefers the AI summary over a longer raw feed dump', () => {
-    // Regression: "keep whichever is longer" let the Guardian's full-article
-    // description beat a clean 3-sentence summary.
-    assert.equal(chooseSummary(ai, longFeedDump), ai);
+  test('accepts our own usable prose', () => {
+    assert.equal(chooseSummary(ai), ai.trim());
   });
 
-  test('falls back to the feed text when the model returns one line', () => {
-    assert.equal(chooseSummary('Too short.', longFeedDump), longFeedDump);
+  test('NEVER falls back to the publisher\'s text', () => {
+    // Regression, found by diffing live output against source: a short model
+    // response used to be replaced with the feed's own blurb, so two cards
+    // published a BBC paragraph word for word. There is no fallback now —
+    // if we cannot write it ourselves, the story is dropped.
+    assert.equal(chooseSummary('Too short.'), null);
+    assert.equal(chooseSummary(''), null);
+    assert.equal(chooseSummary(null), null);
   });
 });
 
@@ -223,6 +226,22 @@ describe('isBlocked', () => {
   test('respects the publisher opt-out list', () => {
     // Populated from BLOCKED_DOMAINS; empty by default, so nothing is blocked.
     assert.equal(isBlocked('https://www.bbc.co.uk/news/x'), false);
+  });
+});
+
+describe('applyEnrichment idempotency', () => {
+  test('re-enriching a cached card must not overwrite the source headline', () => {
+    // Regression: pages are re-enriched on every request, and a second pass
+    // used to set origTitle to OUR headline — erasing the publisher's actual
+    // wording from the audit trail.
+    const item = { title: "Sainsbury's agrees to sell Argos for £120m" };
+    const out = { headline: 'Argos Brand Survives Inside Supermarkets', summary: 'x', whyItMatters: 'y', jargon: [] };
+    applyEnrichment(item, out);
+    const firstOrig = item.origTitle;
+    applyEnrichment(item, out);           // second pass, as happens on a cache hit
+    assert.equal(item.origTitle, firstOrig);
+    assert.match(item.origTitle, /agrees to sell Argos/);
+    assert.equal(item.title, out.headline);
   });
 });
 

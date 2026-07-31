@@ -137,12 +137,16 @@ function clusterStories(items) {
   return primaries;
 }
 
-// Prefer the AI summary when it is substantial. Picking "whichever is longer"
-// was wrong: some feeds (the Guardian) put the entire article in the
-// description, so a raw run-on always beat a clean 3-sentence summary.
-function chooseSummary(aiSummary, feedSummary) {
-  const words = (s) => (s || '').split(/\s+/).filter(Boolean).length;
-  return words(aiSummary) >= 25 ? aiSummary : feedSummary;
+// Returns the summary only if it is our own usable prose, otherwise null.
+//
+// This used to fall back to the feed's text when the model returned something
+// short — which meant the guards checked our text and then published the
+// PUBLISHER'S, verbatim. Live testing caught two cards reproducing a BBC
+// blurb word for word. There is no acceptable fallback: if we cannot write
+// the story ourselves, we do not run it.
+function chooseSummary(aiSummary) {
+  const n = (aiSummary || '').trim().split(/\s+/).filter(Boolean).length;
+  return n >= 18 ? aiSummary.trim() : null;
 }
 
 // Hallucination guard. The model writes original prose about named, real
@@ -374,7 +378,6 @@ ACCURACY RULES — these override everything above. This is published text about
   if (!parsed || !parsed.summary) return null;
 
   const aiSummary = String(parsed.summary).trim();
-  const feedSummary = (item.summary || '').trim();
   const aiHeadline = parsed.headline ? String(parsed.headline).trim() : null;
 
   // Verify against every account we were given, not just the primary.
@@ -399,9 +402,16 @@ ACCURACY RULES — these override everything above. This is published text about
     return null;
   }
 
+  // Our own prose or nothing — never the publisher's blurb.
+  const summary = chooseSummary(aiSummary);
+  if (!summary) {
+    console.warn(`[guard] summary too thin to publish — ${item.title.slice(0, 60)}`);
+    return null;
+  }
+
   const out = {
     headline: aiHeadline,
-    summary: chooseSummary(aiSummary, feedSummary),
+    summary,
     whyItMatters: parsed.why_it_matters ? String(parsed.why_it_matters) : null,
     jargon: Array.isArray(parsed.jargon)
       ? parsed.jargon
@@ -416,6 +426,11 @@ ACCURACY RULES — these override everything above. This is published text about
 
 function applyEnrichment(item, out) {
   if (!out || !out.headline) return;
+  // Idempotent: cached items are re-enriched on every request for the page,
+  // and running twice used to overwrite origTitle with our OWN headline —
+  // destroying the record of what the publisher actually wrote, which is the
+  // one thing the audit trail exists to prove.
+  if (item.rewritten) return;
   item.origTitle = item.title;
   item.title = out.headline;
   item.summary = out.summary;
@@ -792,5 +807,6 @@ module.exports = {
   decodeEntities, tag, attr, sourceFromLink, parseFeed,
   interleaveBySource, chooseSummary, verifyAgainstSource,
   longestSharedRun, clusterStories, isBlocked, isPublishable, isLiveBlog,
+  applyEnrichment,
   rateLimited, clientIp, FEEDS, SECURITY_HEADERS,
 };
