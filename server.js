@@ -696,7 +696,8 @@ const SECURITY_HEADERS = {
 // nothing for a same-origin policy to protect.
 const CORS_HEADERS = {
   'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET, HEAD, OPTIONS',
+  'access-control-allow-methods': 'GET, HEAD, POST, OPTIONS',
+  'access-control-allow-headers': 'content-type',
   'access-control-max-age': '86400',
 };
 
@@ -711,6 +712,40 @@ const server = http.createServer(async (req, res) => {
   // Preflight: answer before the method check, or the browser sees a 405 and
   // never sends the real request.
   if (req.method === 'OPTIONS') return send(res, 204, {}, '');
+
+  // The explainer accepts a POST carrying the story itself. The server's
+  // memory of an article is not durable — the category cache expires every
+  // five minutes, older stories age out of the pool, and a free-tier restart
+  // wipes it entirely. When that happened the app had cards whose ids the
+  // server no longer knew and every "Break it down" failed. The client
+  // already holds the story, so it sends it rather than relying on us.
+  if (req.method === 'POST' && url.pathname === '/api/explain') {
+    let body = '';
+    let tooBig = false;
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 32_000) { tooBig = true; req.destroy(); }
+    });
+    req.on('end', async () => {
+      if (tooBig) return send(res, 413, { 'content-type': 'application/json' },
+        JSON.stringify({ error: 'too large' }));
+      try {
+        const item = JSON.parse(body);
+        if (!item || !item.id || !/^[A-Za-z0-9_-]{1,32}$/.test(item.id)) {
+          return send(res, 400, { 'content-type': 'application/json' },
+            JSON.stringify({ error: 'bad story' }));
+        }
+        const points = await getExplainer(item);
+        return send(res, points ? 200 : 503, { 'content-type': 'application/json; charset=utf-8' },
+          JSON.stringify(points ? { points } : { error: 'unavailable' }));
+      } catch (err) {
+        console.error('[explain:post]', err);
+        return send(res, 502, { 'content-type': 'application/json' },
+          JSON.stringify({ error: 'unavailable' }));
+      }
+    });
+    return;
+  }
 
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     return send(res, 405, { 'content-type': 'text/plain' }, 'Method not allowed');

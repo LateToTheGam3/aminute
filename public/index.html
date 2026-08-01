@@ -1026,7 +1026,20 @@
         if (!panel.dataset.loaded) {
           bd.textContent = '🧩 Breaking it down…';
           try {
-            const r = await fetch(`${API_BASE}/api/explain?id=${encodeURIComponent(item.id)}`);
+            // POST the story itself: the server's memory of an article is not
+            // durable (cache expiry, pool churn, free-tier restarts), and we
+            // already hold everything the explainer needs.
+            const r = await fetch(`${API_BASE}/api/explain`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                id: item.id,
+                title: item.origTitle || item.title,
+                summary: item.summary,
+                whyItMatters: item.whyItMatters,
+                sources: item.sources,
+              }),
+            });
             const d = await r.json();
             if (!d.points || !d.points.length) throw new Error();
             panel.innerHTML = `<b class="tag">🧩 BROKEN DOWN — FOR BEGINNERS</b><ul>${
