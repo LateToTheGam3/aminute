@@ -188,6 +188,7 @@
   }
   .card .body {
     flex: 1;
+    position: relative;
     min-height: 0;
     padding: 16px 20px 0;
     display: flex;
@@ -208,6 +209,22 @@
     scrollbar-width: none;
   }
   .card .scroller::-webkit-scrollbar { display: none; }
+  /* Mirror of the fade above the action row. Without it, text scrolled up
+     inside the card is sliced mid-line against the photo and reads as two
+     elements overlapping rather than as content continuing above. Only shown
+     once actually scrolled, so an unscrolled card stays clean. */
+  .card .body::before {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; top: 0;
+    height: 26px;
+    background: linear-gradient(to bottom, var(--card) 30%, transparent);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .15s ease;
+    z-index: 2;
+  }
+  .card.scrolled .body::before { opacity: 1; }
   .card .foot {
     flex-shrink: 0;
     padding-bottom: 8px;
@@ -974,6 +991,11 @@
         else { await navigator.clipboard.writeText(item.url); showToast('Link copied'); }
       };
       card.querySelector('.open').onclick = () => window.open(item.url, '_blank');
+      const scroller = card.querySelector('.scroller');
+      scroller.addEventListener('scroll', () => {
+        card.classList.toggle('scrolled', scroller.scrollTop > 4);
+      }, { passive: true });
+
       const bd = card.querySelector('.breakdown');
       const panel = card.querySelector('.explain');
       bd.onclick = async () => {
