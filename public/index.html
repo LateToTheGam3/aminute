@@ -225,6 +225,24 @@
     z-index: 2;
   }
   .card.scrolled .body::before { opacity: 1; }
+
+  /* With the breakdown open the summary has already been read, so it gives up
+     its space rather than forcing the reader to scroll a cramped region — the
+     scrolling was what sliced text against the photo and looked like overlap.
+     Two lines are kept so the card still has context at a glance. */
+  .card.expanded .summary {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    opacity: .6;
+  }
+  .card.expanded .why {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
   .card .foot {
     flex-shrink: 0;
     padding-bottom: 8px;
