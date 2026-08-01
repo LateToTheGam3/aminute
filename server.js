@@ -688,13 +688,29 @@ const SECURITY_HEADERS = {
   'permissions-policy': 'geolocation=(), microphone=(), camera=(), payment=()',
 };
 
+// The iOS app is served from capacitor://localhost and calls this API
+// cross-origin, so without CORS headers WKWebView blocks every response and
+// the app shows "Couldn't load the news" while the server looks perfectly
+// healthy. `*` is appropriate here: the API is public, read-only, carries no
+// credentials or cookies, and serves identical news to everybody — there is
+// nothing for a same-origin policy to protect.
+const CORS_HEADERS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, HEAD, OPTIONS',
+  'access-control-max-age': '86400',
+};
+
 function send(res, status, headers, body) {
-  res.writeHead(status, { ...SECURITY_HEADERS, ...headers });
+  res.writeHead(status, { ...SECURITY_HEADERS, ...CORS_HEADERS, ...headers });
   res.end(body);
 }
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  // Preflight: answer before the method check, or the browser sees a 405 and
+  // never sends the real request.
+  if (req.method === 'OPTIONS') return send(res, 204, {}, '');
 
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     return send(res, 405, { 'content-type': 'text/plain' }, 'Method not allowed');
