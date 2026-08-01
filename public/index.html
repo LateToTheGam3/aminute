@@ -902,13 +902,17 @@
   // The credit is not decoration: attribution is the difference between a
   // polite email and a demand letter. Al Jazeera and CNBC ship no images, so
   // those fall through to the generated cover.
+  let coverCount = 0;
   function buildPhoto(item) {
     const url = item.image.replace(/"/g, '%22');
+    // The first screenful is fetched eagerly — a lazily-loaded cover pops in
+    // after the reader is already looking at the card.
+    const loading = coverCount++ < 4 ? 'eager' : 'lazy';
     const label = (item.sources && item.sources.length > 1)
       ? `${item.sources.length} sources · ${esc(item.source)}`
       : esc(item.source);
     return `<div class="img photo">
-        <img src="${url}" alt="" loading="lazy"
+        <img src="${url}" alt="" loading="${loading}"
              onerror="this.closest('.img').classList.add('failed')">
         <span class="credit">${label}</span>
       </div>`;
