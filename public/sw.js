@@ -1,6 +1,6 @@
 // aminute service worker — offline-first shell, last-known-good news.
 // Bump CACHE_VERSION to force clients onto new assets.
-const CACHE_VERSION = 'aminute-v2';
+const CACHE_VERSION = 'aminute-v3';
 const SHELL = ['/', '/index.html', '/glossary.js', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {

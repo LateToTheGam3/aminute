@@ -140,12 +140,22 @@
     background: var(--card);
     position: relative;
   }
+  /* Driven by a custom property rather than overridden per state: the
+     expanded card only has to reassign --img-h on the card, which inherits,
+     so there is no specificity contest between a percentage and a pixel
+     value for the same element. */
+  .card {
+    --img-h: 26%;
+    --img-min: 130px;
+  }
   .card .img {
-    height: 26%;
-    min-height: 130px;
+    height: var(--img-h);
+    min-height: var(--img-min);
     background: var(--line);
     flex-shrink: 0;
+    transition: height .22s ease;
   }
+  @media (prefers-reduced-motion: reduce) { .card .img { transition: none; } }
   .card .cover {
     position: relative;
     display: flex;
@@ -153,9 +163,24 @@
     padding: 14px 20px;
   }
   .card .photo { position: relative; overflow: hidden; background: var(--line); }
-  .card .photo img {
+  /* The photo is shown WHOLE (`contain`), not cropped to fill. News pictures
+     arrive in every aspect ratio, and `cover` was slicing the top off faces —
+     the subject of the picture is the first thing lost. The same image,
+     blown up and blurred, fills the leftover margin so the strip still reads
+     as one block of colour rather than two black bars. Costs no extra
+     network: the browser fetches the URL once and paints it twice. */
+  .card .photo .blur {
+    position: absolute;
+    inset: 0;
     width: 100%; height: 100%;
     object-fit: cover;
+    filter: blur(22px) saturate(1.3) brightness(.72);
+    transform: scale(1.12);
+  }
+  .card .photo .main {
+    position: relative;
+    width: 100%; height: 100%;
+    object-fit: contain;
     display: block;
   }
   /* If the publisher pulls or moves the image, fall back to the flat tint
@@ -226,23 +251,39 @@
   }
   .card.scrolled .body::before { opacity: 1; }
 
-  /* With the breakdown open the summary has already been read, so it gives up
-     its space rather than forcing the reader to scroll a cramped region — the
-     scrolling was what sliced text against the photo and looked like overlap.
-     Two lines are kept so the card still has context at a glance. */
-  .card.expanded .summary {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    opacity: .6;
+  /* ---- Expanded (breakdown open) ----
+     The old version kept a clamped two lines of summary and three of why.
+     `-webkit-line-clamp` on a box that also contains a block label clips at
+     the border box, so the last line was sliced through the middle and the
+     panel below butted against the half-glyphs — that is the "overlapping"
+     the reader sees. Nothing here clamps any more. Instead the card gives up
+     the things already read: the summary steps aside entirely and the photo
+     collapses to a strip. That buys back roughly a third of the card, which
+     is enough for the headline, the why and the full breakdown to sit on one
+     screen with no scrolling and nothing cut. */
+  /* 118px is the largest strip that still lets a three-line headline, a full
+     why-it-matters and five bullets land inside one screen at 375×812 — the
+     smallest phone worth designing for. Measured, not guessed. */
+  .card.expanded { --img-h: 118px; --img-min: 0px; }
+  .card.expanded .summary { display: none; }
+  .card.expanded .photo .blur { filter: blur(26px) brightness(.6); }
+  .card.expanded .cover { padding: 8px 20px; }
+  .card.expanded .body { padding-top: 12px; }
+  .card.expanded h2 {
+    font-size: 20px;
+    line-height: 1.22;
+    margin-bottom: 9px;
   }
   .card.expanded .why {
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
+    margin-top: 0;
+    font-size: 12.5px;
+    line-height: 1.5;
+    padding: 8px 12px;
   }
+  .card.expanded .explain { font-size: 13px; line-height: 1.52; }
+  .card.expanded .explain li { margin-bottom: 5px; }
+  .card.expanded .meta { padding: 8px 0 6px; }
+  .card.expanded .readmore { padding: 9px 13px calc(9px + env(safe-area-inset-bottom)); }
   .card .foot {
     flex-shrink: 0;
     padding-bottom: 8px;
@@ -323,6 +364,24 @@
   .explain ul { margin: 2px 0 0; padding-left: 18px; }
   .explain li { margin-bottom: 6px; }
   .explain li:last-child { margin-bottom: 0; }
+  /* Placeholder bars, shown the instant the button is tapped. The panel used
+     to stay shut until the model answered, so a three-second generation read
+     as a broken button and people tapped again. */
+  .explain .sk {
+    height: 11px;
+    margin: 9px 0;
+    border-radius: 5px;
+    background: linear-gradient(90deg,
+      color-mix(in srgb, var(--gold) 16%, transparent) 25%,
+      color-mix(in srgb, var(--gold) 34%, transparent) 50%,
+      color-mix(in srgb, var(--gold) 16%, transparent) 75%);
+    background-size: 260% 100%;
+    animation: shimmer 1.15s linear infinite;
+  }
+  .explain .sk:nth-child(3) { width: 82%; }
+  .explain .sk:nth-child(4) { width: 65%; }
+  @keyframes shimmer { to { background-position: -260% 0; } }
+  @media (prefers-reduced-motion: reduce) { .explain .sk { animation: none; } }
   .card .meta {
     padding: 10px 0 8px;
     font-size: 12.5px;
@@ -804,14 +863,35 @@
   // feed keeps going instead of stopping dead at one screenful.
   let loadedCount = 0, hasMore = true, loadingMore = false;
 
+  // Stories were repeating in a long session. The server's pool is rebuilt
+  // when its five-minute cache expires, so an offset that pointed at story 40
+  // before the rebuild points somewhere else after it, and the reader gets
+  // articles they have already scrolled past. Offsets can't be trusted across
+  // a rebuild, so the client keeps its own record of what it has shown.
+  // Titles are matched too, not just ids: the same story republished with a
+  // tweaked URL is a different id but the same read.
+  const seenIds = new Set();
+  const seenTitles = new Set();
+
+  function unseen(items) {
+    return (items || []).filter((i) => {
+      const key = (i.title || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (seenIds.has(i.id) || (key && seenTitles.has(key))) return false;
+      seenIds.add(i.id);
+      if (key) seenTitles.add(key);
+      return true;
+    });
+  }
+
   async function loadMore() {
     if (loadingMore || !hasMore) return;
     loadingMore = true;
     try {
       const res = await fetch(`${API_BASE}/api/news?category=${currentCat}&offset=${loadedCount}`);
       const data = await res.json();
-      if (data.items && data.items.length) {
-        for (const item of data.items) feed.appendChild(buildCard(item));
+      const fresh = unseen(data.items);
+      if (fresh.length) {
+        for (const item of fresh) feed.appendChild(buildCard(item));
         updateProgress();
       }
       // Advance by the window the server consumed, not the cards it returned:
@@ -852,6 +932,11 @@
     loadedCount = 0;
     hasMore = true;
     loadingMore = false;
+    // A category switch or a pull-to-refresh is a fresh start: the reader
+    // expects to see stories again, so the seen-record resets with the feed.
+    seenIds.clear();
+    seenTitles.clear();
+    lastPrefetched = -1;
     try {
       const res = await fetch(`${API_BASE}/api/news?category=${cat}&offset=0`);
       const data = await res.json();
@@ -884,7 +969,7 @@
 
   function render(items) {
     feed.innerHTML = '';
-    for (const item of items) {
+    for (const item of unseen(items)) {
       const card = buildCard(item);
       feed.appendChild(card);
     }
@@ -947,7 +1032,8 @@
       ? `${item.sources.length} sources · ${esc(item.source)}`
       : esc(item.source);
     return `<div class="img photo">
-        <img src="${url}" alt="" loading="${loading}"
+        <img class="blur" src="${url}" alt="" aria-hidden="true" loading="${loading}">
+        <img class="main" src="${url}" alt="" loading="${loading}"
              onerror="this.closest('.img').classList.add('failed')">
         <span class="credit">${label}</span>
       </div>`;
@@ -971,10 +1057,80 @@
       </div>`;
   }
 
+  // ---------- Breakdown cache ----------
+  // "Break it down" was slow and sometimes failed outright because every tap
+  // hit the model live. Three things fix that: remember answers for the
+  // session, remember them across launches, and fetch the next card's answer
+  // before the reader gets there. A second tap on the same story is now free.
+  const bdCache = new Map();    // id -> string[]
+  const bdInflight = new Map(); // id -> Promise<string[]>
+  let usedBreakdown = false;
+
+  // Free-tier quota is finite, so the stored answers are pruned rather than
+  // allowed to grow without limit.
+  (function pruneBreakdownStore() {
+    try {
+      const keys = Object.keys(localStorage).filter((k) => k.startsWith('bd:'));
+      if (keys.length > 250) keys.slice(0, keys.length - 250).forEach((k) => localStorage.removeItem(k));
+    } catch {}
+  })();
+
+  function getBreakdown(item) {
+    if (bdCache.has(item.id)) return Promise.resolve(bdCache.get(item.id));
+    if (bdInflight.has(item.id)) return bdInflight.get(item.id);
+    try {
+      const stored = localStorage.getItem('bd:' + item.id);
+      if (stored) {
+        const points = JSON.parse(stored);
+        if (points && points.length) { bdCache.set(item.id, points); return Promise.resolve(points); }
+      }
+    } catch {}
+
+    // POST the story itself: the server's memory of an article is not durable
+    // (cache expiry, pool churn, free-tier restarts), and we already hold
+    // everything the explainer needs.
+    const p = fetch(`${API_BASE}/api/explain`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: item.id,
+        title: item.origTitle || item.title,
+        summary: item.summary,
+        whyItMatters: item.whyItMatters,
+        sources: item.sources,
+      }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.points || !d.points.length) throw new Error('empty');
+        bdCache.set(item.id, d.points);
+        try { localStorage.setItem('bd:' + item.id, JSON.stringify(d.points)); } catch {}
+        return d.points;
+      })
+      .finally(() => bdInflight.delete(item.id));
+
+    bdInflight.set(item.id, p);
+    return p;
+  }
+
+  // Warm the card after the one being read — but only once the reader has
+  // shown they use the feature, so a reader who never taps it costs nothing.
+  let lastPrefetched = -1;
+  function prefetchNextBreakdown() {
+    if (!usedBreakdown) return;
+    const h = feed.clientHeight || 1;
+    const idx = Math.round(feed.scrollTop / h);
+    if (idx === lastPrefetched) return;
+    lastPrefetched = idx;
+    const next = feed.querySelectorAll('.card')[idx + 1];
+    if (next && next._item && next._item.whyItMatters) getBreakdown(next._item).catch(() => {});
+  }
+
   function buildCard(item) {
     {
       const card = document.createElement('article');
       card.className = 'card';
+      card._item = item; // so the prefetcher can reach the next story
       if (item.whyItMatters) card.dataset.enriched = '1';
       const img = buildCover(item);
       const whyHtml = item.whyItMatters
@@ -1016,46 +1172,40 @@
 
       const bd = card.querySelector('.breakdown');
       const panel = card.querySelector('.explain');
+      const collapse = () => {
+        panel.style.display = 'none';
+        card.classList.remove('expanded');
+        bd.textContent = '🧩 Break it down';
+      };
+
       bd.onclick = async () => {
-        if (panel.style.display !== 'none') {
-          panel.style.display = 'none';
-          card.classList.remove('expanded');
-          bd.textContent = '🧩 Break it down';
-          return;
-        }
+        if (card.classList.contains('expanded')) { collapse(); return; }
+        usedBreakdown = true;
+
+        // Open first, fill second. The panel used to stay shut until the model
+        // answered, which read as a dead button on a slow response — people
+        // tapped again and got nothing. Now the tap always does something.
         if (!panel.dataset.loaded) {
-          bd.textContent = '🧩 Breaking it down…';
-          try {
-            // POST the story itself: the server's memory of an article is not
-            // durable (cache expiry, pool churn, free-tier restarts), and we
-            // already hold everything the explainer needs.
-            const r = await fetch(`${API_BASE}/api/explain`, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                id: item.id,
-                title: item.origTitle || item.title,
-                summary: item.summary,
-                whyItMatters: item.whyItMatters,
-                sources: item.sources,
-              }),
-            });
-            const d = await r.json();
-            if (!d.points || !d.points.length) throw new Error();
-            panel.innerHTML = `<b class="tag">🧩 BROKEN DOWN — FOR BEGINNERS</b><ul>${
-              d.points.map((p) => `<li>${annotate(p, item.jargon)}</li>`).join('')
-            }</ul>`;
-            panel.dataset.loaded = '1';
-          } catch {
-            bd.textContent = '🧩 Break it down';
-            showToast('Explainer unavailable right now');
-            return;
-          }
+          panel.innerHTML = '<b class="tag">🧩 BROKEN DOWN — FOR BEGINNERS</b>'
+            + '<div class="sk"></div><div class="sk"></div><div class="sk"></div>';
         }
         panel.style.display = 'block';
         card.classList.add('expanded');
         bd.textContent = '🧩 Hide breakdown';
-        panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        if (panel.dataset.loaded) return;
+        try {
+          const points = await getBreakdown(item);
+          panel.innerHTML = `<b class="tag">🧩 BROKEN DOWN — FOR BEGINNERS</b><ul>${
+            points.map((p) => `<li>${annotate(p, item.jargon)}</li>`).join('')
+          }</ul>`;
+          panel.dataset.loaded = '1';
+        } catch {
+          // Put the card back exactly as it was rather than leaving an empty
+          // gold box sitting under the story.
+          collapse();
+          showToast('Explainer unavailable — try again in a moment');
+        }
       };
       return card;
     }
@@ -1073,6 +1223,7 @@
   }
   feed.addEventListener('scroll', () => requestAnimationFrame(() => {
     updateProgress();
+    prefetchNextBreakdown();
     // Fetch the next page well before the reader gets there, so the feed
     // never visibly stops.
     const total = feed.querySelectorAll('.card').length;
