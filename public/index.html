@@ -309,14 +309,29 @@
     margin-bottom: 8px;
   }
   .chipline em { color: var(--text-3); font-style: normal; }
+  /* The headline pins to the top of the scroll region. Scrolling a long story
+     used to carry the headline away, so by the time the reader reached the
+     bottom they were reading detail with nothing to attach it to — which is
+     most of why nothing stuck. The one thing that must never leave the screen
+     is what the story is about. Total spacing below is unchanged: the old
+     11px margin is now 6px padding (inside the opaque band, so text passing
+     underneath is covered) plus 5px margin. */
   .card h2 {
     font-family: "Newsreader", Georgia, serif;
     font-size: 26px;
     line-height: 1.2;
     font-weight: 700;
     letter-spacing: -0.2px;
-    margin-bottom: 11px;
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: var(--card);
+    padding-bottom: 6px;
+    margin-bottom: 5px;
   }
+  /* Only once something has actually scrolled under it, so a card that fits
+     on one screen shows no line at all. */
+  .card.scrolled h2 { box-shadow: 0 7px 12px -9px var(--shadow); }
   .card .summary {
     font-family: "Newsreader", Georgia, serif;
     font-size: 17px;

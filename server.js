@@ -189,6 +189,34 @@ function verifyAgainstSource(summary, sourceText) {
 // 60 words from one article reliably produces text that mirrors its structure
 // and reuses its distinctive phrasing — the failure you never notice unless
 // you diff the two. Anything past a short run is lifting, not summarising.
+// Words that make a card unmemorable. Every one of these is an abstraction
+// standing where a concrete thing should be, and a reader recalls nothing
+// from an abstraction. "Candidates can leverage this to discuss sector
+// dynamics" appeared verbatim-in-shape on every card in the feed, which is
+// why no card was distinguishable from any other an hour later.
+const FLAT_PHRASES = [
+  /\bcandidates?\b/i, /\binterviews?\b/i, /\brecruiters?\b/i, /\bapplicants?\b/i,
+  /\bleverage\b/i, /\bdemonstrates?\b/i, /\bunderscores?\b/i, /\bhighlights?\b/i,
+  /\bshowcases?\b/i, /\bdynamics\b/i, /\blandscape\b/i, /\bpositioning\b/i,
+  /\bstrategic implications?\b/i, /\bkey player\b/i, /\becosystem\b/i,
+  /\bheadwinds?\b/i, /\btailwinds?\b/i,
+];
+
+function boilerplateHits(text) {
+  if (!text) return [];
+  return FLAT_PHRASES.map((re) => (re.test(text) ? re.source.replace(/\\b|\?|s\b/g, '') : null))
+    .filter(Boolean);
+}
+
+// A card with no number, no company and no place gives the reader nothing to
+// hang a memory on. Names are detected as capitalised words that are not
+// simply the start of a sentence.
+function hasConcreteAnchor(text) {
+  if (!text) return false;
+  if (/\d/.test(text)) return true;
+  return /(?:[a-z,]\s)([A-Z][a-zA-Z&.'-]+)/.test(text);
+}
+
 function longestSharedRun(summary, sourceText) {
   const words = (s) => (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
   const a = words(summary);
@@ -374,12 +402,58 @@ Write from the FACTS these accounts share. Do not follow any single account's se
 
 Return ONLY a JSON object:
 {
-  "headline": "your OWN headline, max 9 words. Make it genuinely intriguing — lead with the surprising fact, the tension or the number that makes a reader want to know more. It must remain strictly accurate: no invented drama, no question-bait, and never reuse the publisher's headline wording.",
+  "headline": "your OWN headline, 6-10 words, written to stop a thumb mid-scroll. See HEADLINE CRAFT below. Never reuse the publisher's headline wording.",
   "summary": "ORIGINAL prose, ${target}. Plain English.",
-  "why_it_matters": "EXACTLY 2 sentences, 30-45 words. First: the commercial or market consequence. Second: why a candidate should care — what it signals about the sector, or how they could use it in an interview answer.",
+  "why_it_matters": "EXACTLY 2 sentences, 30-45 words. Sentence 1: the concrete consequence — name the company, country or figure it turns on, and state cause and effect plainly ('X did A, so B now costs more'). Sentence 2: the single line a reader would repeat to a friend that evening. Everyday words, no analyst vocabulary.",
   "jargon": [{"term": "a technical term appearing verbatim in your summary", "meaning": "max 15 words, simple English"}]
 }
 Include 0-3 jargon items, only terms a beginner genuinely would not know.
+
+HEADLINE CRAFT — the headline is the whole card for most readers.
+- FRONT-LOAD the hook. The most surprising word goes in the first three words,
+  not the last three. "Photographer spends decade capturing portraits of
+  red-haired individuals" buries it; "Ten years photographing redheads" leads
+  with it.
+- Use the SHORT word every time: redheads not red-haired individuals, buys not
+  acquires, quits not steps down from her position, amid not amidst.
+- Numerals, never words: "10 years" not "a decade", "£2bn" not "two billion".
+  Rankings keep their marker: "No.2 spot", not "2 spot".
+- Name the thing people recognise. A known brand, country or person earns
+  attention that "a leading retailer" never will.
+- Lead with tension or reversal where the facts genuinely contain one: the
+  contrast, the reversal, the thing that shouldn't be true but is.
+- Active voice, present tense, no full stop. Cut every word that carries no
+  information — "in a move that", "has announced that", "is set to".
+- A curiosity gap is allowed ONLY when the card answers it. Never withhold the
+  fact to force a tap.
+
+FORBIDDEN in headlines — these destroy trust faster than they earn taps:
+- Question headlines ("Is this the end of...?"), "You won't believe", "This
+  changes everything", "shocking", "stunning", "slams", "blasts", "erupts".
+- Overstating scale: no "collapse" for a dip, no "crisis" for a setback, no
+  "war" for a disagreement. The headline's temperature must match the facts.
+- Any implication the accounts do not support. A headline that is technically
+  true but leaves a false impression is the worst possible outcome — this is
+  published text about real, named people and companies.
+
+MEMORABILITY RULES — the reader must still recall this card an hour later.
+A reader remembers concrete things: a named company, a country, a number, a
+comparison. They remember nothing at all from abstract nouns.
+- Every card must carry at least one specific anchor — a figure, a named
+  company, a named person or a place — in the summary or the why. If the
+  accounts contain a number, it belongs in the card. Never invent one.
+- NEVER write about "candidates", "interviews", "applicants" or "recruiters".
+  The reader knows why they are here; saying it every time makes every card
+  read identically and is the reason nothing is memorable.
+- BANNED words and phrases, no exceptions: candidates, interview, leverage,
+  demonstrates, underscores, highlights, showcases, signals, dynamics,
+  landscape, positioning, strategic implications, robust, key player,
+  space (meaning industry), ecosystem, headwinds, tailwinds.
+- Prefer the short word: "buying" not "acquisition strategy", "borrowing
+  costs" not "capital structure considerations", "sales fell" not "revenue
+  contraction was observed".
+- Vary how cards open. If two cards in a batch begin the same way, rewrite one.
+- Write in the active voice. Name who did the thing.
 
 ACCURACY RULES — these override everything above. This is published text about real, named people and companies:
 - Use ONLY facts present in the accounts above. Never add figures, dates, percentages, names or quotes that are not there.
@@ -433,6 +507,13 @@ ACCURACY RULES — these override everything above. This is published text about
           .map((j) => ({ term: String(j.term), meaning: String(j.meaning) }))
       : [],
   };
+  // Quality signal, not a rejection: dropping these would thin the feed, and
+  // a card with flat prose is still a true card. Logged so the relapse rate
+  // is visible in the Render logs rather than only in the reading.
+  const flat = boilerplateHits(out.whyItMatters);
+  if (flat.length) {
+    console.warn(`[voice] ${flat.join(', ')} — ${item.title.slice(0, 60)}`);
+  }
   aiCache.set(item.id, out);
   return out;
 }
@@ -884,6 +965,7 @@ module.exports = {
   decodeEntities, tag, attr, sourceFromLink, parseFeed,
   interleaveBySource, chooseSummary, verifyAgainstSource,
   longestSharedRun, clusterStories, isBlocked, isPublishable, isLiveBlog,
+  boilerplateHits, hasConcreteAnchor,
   applyEnrichment,
   rateLimited, clientIp, FEEDS, SECURITY_HEADERS,
 };

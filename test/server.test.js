@@ -12,6 +12,7 @@ const {
   interleaveBySource, chooseSummary, verifyAgainstSource,
   longestSharedRun, clusterStories, isBlocked, isPublishable, isLiveBlog,
   applyEnrichment, rateLimited, FEEDS,
+  boilerplateHits, hasConcreteAnchor,
 } = require('../server.js');
 
 describe('decodeEntities', () => {
@@ -293,5 +294,39 @@ describe('feed configuration', () => {
     }
     const ukHosts = /bbc|guardian|cityam|sky/;
     assert.ok(FEEDS.finance.some((u) => ukHosts.test(u)), 'finance must include UK sources');
+  });
+});
+
+// The retention bug: every card in the live feed ended with the same
+// interview-boilerplate sentence and none contained a number, so no card was
+// distinguishable from any other an hour after reading.
+describe('memorable voice', () => {
+  test('flags the interview boilerplate that made every card identical', () => {
+    const flat = 'Candidates can leverage this to discuss sector dynamics in interviews.';
+    assert.ok(boilerplateHits(flat).length >= 3);
+  });
+
+  test('passes prose that names a thing and states a consequence', () => {
+    const good = 'Shell is paying £2bn for the stake, its biggest UK deal since 2016. '
+      + 'Your petrol probably gets cheaper before it gets dearer.';
+    assert.deepEqual(boilerplateHits(good), []);
+  });
+
+  test('no false positive on ordinary words', () => {
+    assert.deepEqual(boilerplateHits('The bank cut rates and shares rose.'), []);
+    assert.deepEqual(boilerplateHits(null), []);
+  });
+
+  test('a number counts as something to remember', () => {
+    assert.ok(hasConcreteAnchor('Inflation fell to 3.2% in July.'));
+  });
+
+  test('so does a named company mid-sentence', () => {
+    assert.ok(hasConcreteAnchor('The deal hands Tesco a fifth of the market.'));
+  });
+
+  test('pure abstraction has nothing to hang a memory on', () => {
+    assert.equal(hasConcreteAnchor('The sector faces continued pressure on margins.'), false);
+    assert.equal(hasConcreteAnchor(''), false);
   });
 });
