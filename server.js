@@ -350,6 +350,15 @@ function parseFeed(xml, category) {
 // back to feed descriptions + the built-in client-side glossary.
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-lite-latest';
+// Headlines and briefs get the stronger model; everything else stays on lite.
+// This is not a preference — it is the difference between "Burger King climbs
+// US ranks, secures 2nd-largest burger chain spot" and "Burger King becomes
+// 2nd-largest US burger chain by sales". The rule that produced the second one
+// ("drop the comma when the payoff clause carries no new fact") needs judgement
+// that lite does not have, and no amount of prompt tuning supplied it. The
+// breakdown and quiz are plain rewriting jobs, so they stay on the cheaper,
+// higher-quota model.
+const GEMINI_MODEL_WRITE = process.env.GEMINI_MODEL_WRITE || 'gemini-flash-latest';
 
 // Hard daily ceiling on AI calls. Even if everything else fails, the bill
 // (or the free-tier quota) cannot run away. Resets at UTC midnight.
@@ -403,29 +412,94 @@ Write from the FACTS these accounts share. Do not follow any single account's se
 Return ONLY a JSON object:
 {
   "headline": "your OWN headline, 6-10 words, written to stop a thumb mid-scroll. See HEADLINE CRAFT below. Never reuse the publisher's headline wording.",
-  "summary": "ORIGINAL prose, ${target}. Plain English.",
+  "summary": "ORIGINAL prose, ${target}. See BRIEF CRAFT below.",
   "why_it_matters": "EXACTLY 2 sentences, 30-45 words. Sentence 1: the concrete consequence — name the company, country or figure it turns on, and state cause and effect plainly ('X did A, so B now costs more'). Sentence 2: the single line a reader would repeat to a friend that evening. Everyday words, no analyst vocabulary.",
   "jargon": [{"term": "a technical term appearing verbatim in your summary", "meaning": "max 15 words, simple English"}]
 }
 Include 0-3 jargon items, only terms a beginner genuinely would not know.
 
 HEADLINE CRAFT — the headline is the whole card for most readers.
-- FRONT-LOAD the hook. The most surprising word goes in the first three words,
-  not the last three. "Photographer spends decade capturing portraits of
-  red-haired individuals" buries it; "Ten years photographing redheads" leads
-  with it.
-- Use the SHORT word every time: redheads not red-haired individuals, buys not
-  acquires, quits not steps down from her position, amid not amidst.
-- Numerals, never words: "10 years" not "a decade", "£2bn" not "two billion".
-  Rankings keep their marker: "No.2 spot", not "2 spot".
-- Name the thing people recognise. A known brand, country or person earns
-  attention that "a leading retailer" never will.
-- Lead with tension or reversal where the facts genuinely contain one: the
-  contrast, the reversal, the thing that shouldn't be true but is.
-- Active voice, present tense, no full stop. Cut every word that carries no
+
+THE SHAPE. Write it as: WHO does WHAT, then the PAYOFF.
+Two clauses, joined by a comma. First clause: the named thing and the action,
+in plain subject-verb-object order. Second clause: the number, the rank, the
+consequence — the bit that makes it worth knowing.
+
+THE PAYOFF CLAUSE MUST CARRY A FACT THE FIRST CLAUSE DOES NOT. Before you
+write the comma, ask what NEW thing comes after it. If the answer is a
+rephrasing, delete the comma and ship one clean clause instead. A single
+strong clause beats a padded pair every time. These all fail the test:
+  "Red Cross completes first prisoner swap, exchanges captives in North Kivu"
+     -> the second clause is the first one again. Write: "Red Cross runs
+        first Congo-M23 prisoner swap in North Kivu"
+  "Ascot hosts Shergar Cup Sprint, favourite Thunder Call enters"
+     -> nothing happened yet. Write: "Thunder Call goes off favourite in
+        Ascot's Shergar Cup Sprint"
+
+ORDINALS AND RANKS, absolute rule: never a bare digit for a position. Write
+"2nd", "No.2" or "second" — never "2 spot", never "reclaims 2". The correct
+form of the worst headline this prompt has produced:
+  WRONG: "Burger King reclaims 2 spot in US, beats rival chains"
+  RIGHT: "Burger King overtakes Wendy's, becomes 2nd-biggest US burger chain"
+
+LEAD WITH A NAME ONLY IF READERS KNOW IT. Tesco, Ukraine, Mike Ashley: yes.
+A private individual named only by first name: no — lead with what happened
+to them instead. "Alex skips winter market stall" means nothing to anyone;
+"Rising costs force market trader to quit after 9 years" is the story.
+
+Follow these worked examples EXACTLY for shape and register. They are style
+demonstrations, not facts — never reuse their content:
+  "Shell buys North Sea rival for £2bn, its biggest deal since 2016"
+  "Burger King overtakes Wendy's, becomes 2nd-biggest US burger chain"
+  "UK inflation falls to 3.2%, lowest in almost 3 years"
+  "Photographer spends 10 years shooting redheads, publishes 500 portraits"
+  "Nvidia adds $200bn in a day, now worth more than Google"
+  "Thames Water misses debt payment, 16 mn customers face bill rise"
+
+What those have in common, and what yours must have:
+- The recognisable NAME comes first. Not "a leading retailer" — say Tesco.
+- The NUMBER is in the headline, not saved for the body. If the accounts
+  contain a figure, rank, count or percentage, it belongs here. Numerals
+  always: "£2bn" not "two billion", "10 years" not "a decade".
+- Plain, direct, straightforward. No wordplay, no cleverness, no inversion, no
+  literary phrasing. A 15-year-old should get it at a glance and never have to
+  re-read.
+- The short word every time: buys not acquires, quits not steps down from her
+  position, redheads not red-haired individuals, amid not amidst, hits not
+  impacts, cuts not implements reductions.
+- The payoff clause must add NEW information, never restate the first clause.
+  "Burger King reclaims 2 spot in US burger market" fails on every count: no
+  payoff, a mangled number, and it reads like a filing.
+- Active voice, present tense, no full stop, 8-12 words.
+- Cut every word that carries no
   information — "in a move that", "has announced that", "is set to".
 - A curiosity gap is allowed ONLY when the card answers it. Never withhold the
   fact to force a tap.
+
+BRIEF CRAFT — the ${target} summary. Same voice as the headline: direct,
+straightforward, easy, and specific enough to stick.
+- SENTENCE 1 CARRIES THE WHOLE STORY. Someone who reads only that first
+  sentence must have the news: who, did what, and the number. Never open with
+  background, never with a subordinate clause, never with "In a move that" or
+  "The company announced that".
+- Then ONE NEW FACT PER SENTENCE. Do not stack clauses. If a sentence runs
+  past about 20 words, it is two sentences.
+- Everyday words and active voice throughout. "Sales fell 12%" not "a revenue
+  contraction of 12% was recorded". "The bank said" not "it was indicated by
+  the bank".
+- Every figure, name and place in the accounts that matters goes IN. Specifics
+  are what a reader remembers an hour later; generalities evaporate.
+- STOP WHEN THE FACTS RUN OUT. The word range is a ceiling, never a target. A
+  25-word brief that says three real things beats a 55-word one padded to
+  length. Delete any sentence that adds no fact — these are all padding and
+  must never appear: "The fast food chain achieves this position based on
+  recent market performance figures." "This operation took place in the North
+  Kivu region." "The company continues to monitor the situation."
+- End on the fact worth repeating, not on a limp qualifier.
+- Never repeat the headline's wording. The headline says what happened; the
+  brief says how, how much, and what follows.
+- No filler transitions: "meanwhile", "furthermore", "it is worth noting",
+  "the move comes as".
 
 FORBIDDEN in headlines — these destroy trust faster than they earn taps:
 - Question headlines ("Is this the end of...?"), "You won't believe", "This
@@ -461,7 +535,11 @@ ACCURACY RULES — these override everything above. This is published text about
 - Never speculate about a named individual's motives, guilt, health or private life.
 - If the accounts are thin, write LESS. Never fill a word count by inventing specifics.
 - Attribute contested claims ("the company said", "prosecutors allege") rather than asserting them.`;
-  const parsed = await geminiJSON(prompt, 14000);
+  // The stronger model writes the card. If its (smaller) free-tier quota is
+  // exhausted, fall back to lite rather than dropping the story: a flatter
+  // headline still beats no card at all.
+  let parsed = await geminiJSON(prompt, 20000, 3, GEMINI_MODEL_WRITE);
+  if (!parsed) parsed = await geminiJSON(prompt, 14000, 2, GEMINI_MODEL);
   if (!parsed || !parsed.summary) return null;
 
   const aiSummary = String(parsed.summary).trim();
@@ -590,13 +668,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Single entry point for every Gemini call. The free tier throttles bursts,
 // so a 429 is normal rather than exceptional — back off and retry instead of
 // silently dropping the card's enrichment.
-async function geminiJSON(prompt, timeoutMs = 15000, tries = 4) {
+async function geminiJSON(prompt, timeoutMs = 15000, tries = 4, model = GEMINI_MODEL) {
   if (!GEMINI_KEY) return null;
   for (let attempt = 0; attempt < tries; attempt++) {
     if (!aiBudgetOk()) return null;
     try {
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
