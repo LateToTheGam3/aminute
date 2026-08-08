@@ -12,7 +12,7 @@ const {
   interleaveBySource, chooseSummary, verifyAgainstSource,
   longestSharedRun, clusterStories, isBlocked, isPublishable, isLiveBlog,
   applyEnrichment, rateLimited, FEEDS,
-  boilerplateHits, hasConcreteAnchor,
+  boilerplateHits, hasConcreteAnchor, isOffTopic,
 } = require('../server.js');
 
 describe('decodeEntities', () => {
@@ -328,5 +328,48 @@ describe('memorable voice', () => {
   test('pure abstraction has nothing to hang a memory on', () => {
     assert.equal(hasConcreteAnchor('The sector faces continued pressure on margins.'), false);
     assert.equal(hasConcreteAnchor(''), false);
+  });
+});
+
+// A finance app was serving horse racing, a photographer's portrait series and
+// MarketWatch's personal-advice column. Each case below was in the live feed.
+describe('isOffTopic', () => {
+  const off = (t, d, u) => isOffTopic(t, d || '', u || 'https://x.com/a/b');
+
+  test('drops horse racing', () => {
+    assert.equal(off('Thunder Call set to Strike in Shergar Cup Sprint',
+      'The colt runs over six furlongs at Ascot.'), true);
+  });
+
+  test('drops football, even from a business feed', () => {
+    assert.equal(off('Infantino sorry for errors but stays Fifa president'), true);
+  });
+
+  test('drops the first-person advice column', () => {
+    assert.equal(off('My brother has cancer and my father is 94. How do I shoulder this?'), true);
+  });
+
+  test('drops the lifestyle feature', () => {
+    assert.equal(off('Shorts, strappy tops and sandals: What is acceptable to wear to work?'), true);
+  });
+
+  test('keeps a sport story with a real money angle', () => {
+    // Commercial awareness is the point — a transfer fee is a business story.
+    assert.equal(off('Premier League club agrees £60m striker deal',
+      'The transfer values the player at a record fee for the club.'), false);
+  });
+
+  test('keeps a commercial story a publisher filed under a soft section', () => {
+    // Regression: the Guardian files Nintendo under /games/, so a tariffs and
+    // profit story was being thrown out on its URL alone.
+    assert.equal(isOffTopic('Trump tariffs refund ignites 53% profit spike at Nintendo',
+      'The refund lifted profits sharply.', 'https://www.theguardian.com/games/2026/aug/07/nintendo'), false);
+  });
+
+  test('never drops ordinary business news', () => {
+    // Regression: requiring positive evidence threw away 40% of the feed.
+    assert.equal(off('Owner of bike maker Raleigh files for insolvency'), false);
+    assert.equal(off('Argos is getting a makeover - but can it attract new shoppers?'), false);
+    assert.equal(off('Winemakers prosper but veg farms wilt in the drought'), false);
   });
 });

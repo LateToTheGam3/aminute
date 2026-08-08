@@ -30,8 +30,103 @@ const FINANCE_FEEDS = [
 const GEOPOLITICS_FEEDS = [
   'https://feeds.bbci.co.uk/news/world/rss.xml',
   'https://www.theguardian.com/world/rss', // Guardian World (UK)
-  'https://www.aljazeera.com/xml/rss/all.xml',
+  // Al Jazeera's all.xml carries their entire output — sport, culture, the
+  // lot — which is where the horse racing and the photographer profile were
+  // coming from. The economy feed is the part this app is about.
+  'https://www.aljazeera.com/xml/rss/economy.xml',
 ];
+
+// --- Topic filter ---------------------------------------------------------
+// This app is business, finance and geopolitics. Even topic-specific feeds
+// leak: City AM runs a racing section, MarketWatch runs a personal-advice
+// column, and the BBC business feed carries the occasional human-interest
+// piece. A card about a photographer's portrait series is not wrong, it is
+// just not what anyone opened this app for — and the AI dutifully writes
+// commercial analysis of it, which makes the whole product look confused.
+
+// Section names in the URL path. The most reliable signal where publishers
+// expose it; the BBC uses opaque article ids, so it cannot be the only one.
+// Hard sections: nothing filed here is ever what this app is for.
+const OFFTOPIC_PATH_HARD =
+  /\/(sport|sports|football|cricket|rugby|tennis|golf|racing|boxing|formula1|celebrity|lifestyle|travel|recipes|fashion|beauty|horoscopes)\//i;
+
+// Soft sections: usually off-topic, but they do carry real commercial stories
+// — "Trump tariffs refund ignites 53% profit spike at Nintendo" is filed under
+// /games/ and is unmistakably a business story. These need a money angle to
+// survive rather than an outright ban.
+const OFFTOPIC_PATH_SOFT =
+  /\/(entertainment|entertainment-arts|culture|arts|books|music|film|movies|tv-and-radio|television|food|games|gaming)\//i;
+
+// Vocabulary that only appears in a story about a match or a celebrity.
+const OFFTOPIC_WORDS = new RegExp(
+  '\\b(' + [
+    // sport
+    'sprint', 'colt', 'filly', 'furlong', 'jockey', 'racecourse', 'gelding',
+    'premier league', 'champions league', 'striker', 'midfielder', 'goalkeeper',
+    'kick-?off', 'wicket', 'innings', 'batsman', 'bowler', 'touchdown',
+    'quarterback', 'nba', 'nfl', 'grand slam', 'wimbledon', 'olympics?',
+    'matchday', 'fixtures?', 'half-?time', 'penalty shoot',
+    // Governing bodies and competitions: the BBC exposes /sport/ in the URL,
+    // but publishers with opaque article ids do not, so the name has to catch
+    // it. A sponsorship or broadcast-rights story still escapes via ON_TOPIC.
+    'fifa', 'uefa', 'world cup', 'la liga', 'serie a', 'bundesliga',
+    'formula one', 'test match', 'six nations',
+    // showbiz
+    'box office', 'red carpet', 'reality tv', 'film festival', 'chart-topping',
+    'new album', 'tour dates',
+  ].join('|') + ')\\b', 'i');
+
+// First-person advice columns — MarketWatch's "Moneyist" and its imitators.
+// These are not news and read as bizarre next to a sanctions story.
+const ADVICE_COLUMN =
+  /\b(should i|how do i|what should i|my (husband|wife|brother|sister|father|mother|son|daughter|partner|in-laws)|dear (quentin|moneyist|penny)|i'?m \d+ (and|years old))\b/i;
+
+// Soft-feature vocabulary. These are the lifestyle pieces that ride along in
+// a business feed — what to wear to the office, how to survive a heatwave
+// wedding, the cost of being single.
+const LIFESTYLE = new RegExp(
+  '(' + [
+    'what (is acceptable |are you supposed )?to wear', 'how to survive',
+    'how to (dress|pack|host|throw)', 'wedding(s)? (guest|season|outfit)',
+    'recipes?\\b', 'best (restaurants|holidays|beaches|hotels)',
+    'dating app', 'staycation', 'wardrobe', 'skincare', 'horoscope',
+    'gift guide', 'things to do this weekend',
+  ].join('|') + ')', 'i');
+
+// Positive evidence that a story is commercial. NOT required of every story —
+// requiring it threw away 40% of the feed, including "Owner of bike maker
+// Raleigh files for insolvency". It is used only as an escape hatch: a sport
+// or showbiz story with a real money angle (a £60m transfer fee, a studio's
+// results) is a legitimate commercial story and should stay.
+const ON_TOPIC = new RegExp(
+  '(\\b(' + [
+    'revenue', 'profits?', 'losses', 'shares?', 'stocks?', 'markets?', 'deals?',
+    'acquisitions?', 'takeovers?', 'mergers?', 'ipo', 'valuation', 'funding',
+    'investors?', 'economy', 'economic', 'inflation', 'interest rates?', 'gdp',
+    'tariffs?', 'sanctions?', 'treasury', 'budget', 'taxes?', 'regulators?',
+    'central bank', 'bonds?', 'currency', 'trade', 'exports?', 'imports?',
+    'sales', 'earnings', 'bankrupt\\w*', 'administration', 'layoffs?', 'jobs',
+    'unemployment', 'wages', 'pensions?', 'mortgages?', 'election', 'parliament',
+    'government', 'minister', 'diplomat\\w*', 'war', 'ceasefire', 'treaty',
+    'border', 'migrants?', 'summit', 'nato', 'european union', 'united nations',
+    'sanction\\w*', 'company', 'firm', 'business', 'chief executive', 'ceo',
+    'billion', 'million', 'chancellor', 'federal reserve', 'oil', 'energy',
+  ].join('|') + ')\\b)|[£$€]\\s?\\d|\\d\\s?%|\\b\\d+(\\.\\d+)?(bn|m)\\b', 'i');
+
+// Drops only on clear evidence of being off-topic. The feeds are already
+// scoped to business, markets and world news, so the leak is a few specific
+// categories rather than a general drift — and wrongly dropping a real story
+// costs more than occasionally showing a soft one.
+function isOffTopic(title, description, url) {
+  const text = `${title || ''} ${description || ''}`;
+  if (url && OFFTOPIC_PATH_HARD.test(url)) return true;
+  if (ADVICE_COLUMN.test(text)) return true;
+  if (LIFESTYLE.test(text)) return true;
+  if (url && OFFTOPIC_PATH_SOFT.test(url)) return !ON_TOPIC.test(text);
+  // Sport and showbiz stay out unless there is a genuine money angle.
+  if (OFFTOPIC_WORDS.test(text)) return !ON_TOPIC.test(text);
+  return false;
+}
 
 // Publishers who have asked not to be included. Add a domain here and every
 // card from them disappears on the next refresh — no code change, no deploy
@@ -784,6 +879,12 @@ async function getNews(category) {
   // can keep going. Round-robin mixing still applies across the full pool.
   // Honour opt-outs before anything else touches the story.
   items = items.filter((i) => !isBlocked(i.url));
+  // Drop off-topic stories before enrichment, not after: an AI call spent
+  // writing commercial analysis of a horse race is quota that a real story
+  // needed.
+  const onTopic = items.filter((i) => !isOffTopic(i.title, i.summary, i.url));
+  console.log(`[topic] kept ${onTopic.length} of ${items.length}`);
+  items = onTopic;
   // Merge the same story across publishers first, then balance the sources.
   items = interleaveBySource(clusterStories(items), POOL_MAX);
 
@@ -1043,7 +1144,7 @@ module.exports = {
   decodeEntities, tag, attr, sourceFromLink, parseFeed,
   interleaveBySource, chooseSummary, verifyAgainstSource,
   longestSharedRun, clusterStories, isBlocked, isPublishable, isLiveBlog,
-  boilerplateHits, hasConcreteAnchor,
+  boilerplateHits, hasConcreteAnchor, isOffTopic,
   applyEnrichment,
   rateLimited, clientIp, FEEDS, SECURITY_HEADERS,
 };
